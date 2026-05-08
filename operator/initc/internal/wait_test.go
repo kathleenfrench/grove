@@ -19,152 +19,54 @@ package internal
 import (
 	"testing"
 
-	apicommon "github.com/ai-dynamo/grove/operator/api/common"
+	grovecorev1alpha1 "github.com/ai-dynamo/grove/operator/api/core/v1alpha1"
 
 	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
-	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/sets"
+	"k8s.io/utils/ptr"
 )
 
-// TestGetLabelSelectorForPods verifies the label selector generation for pod filtering.
-func TestGetLabelSelectorForPods(t *testing.T) {
+func TestNotifyIfAllParentsReady(t *testing.T) {
 	tests := []struct {
-		// Test case name for identifying failures
-		name string
-		// Input PodGang name to generate selector for
-		podGangName string
-		// Expected label selector map
-		expected map[string]string
+		name              string
+		dependencies      sets.Set[string]
+		currentReadyPCLQs sets.Set[string]
+		expected          bool
 	}{
 		{
-			// Basic PodGang name should generate correct selector
-			name:        "basic_podgang_name",
-			podGangName: "my-podgang",
-			expected: map[string]string{
-				apicommon.LabelPodGang: "my-podgang",
-			},
+			name:              "all_dependencies_met",
+			dependencies:      sets.New("podclique-a", "podclique-b"),
+			currentReadyPCLQs: sets.New("podclique-a", "podclique-b"),
+			expected:          true,
 		},
 		{
-			// Empty PodGang name should still generate valid selector
-			name:        "empty_podgang_name",
-			podGangName: "",
-			expected: map[string]string{
-				apicommon.LabelPodGang: "",
-			},
+			name:              "one_dependency_not_met",
+			dependencies:      sets.New("podclique-a", "podclique-b"),
+			currentReadyPCLQs: sets.New("podclique-a"),
+			expected:          false,
 		},
 		{
-			// PodGang name with special characters should be preserved
-			name:        "podgang_name_with_special_chars",
-			podGangName: "my-podgang-123_test",
-			expected: map[string]string{
-				apicommon.LabelPodGang: "my-podgang-123_test",
-			},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := getLabelSelectorForPods(tt.podGangName)
-			assert.Equal(t, tt.expected, result, "Label selector should match expected result")
-		})
-	}
-}
-
-// TestCheckAllParentsReady tests the readiness checking logic.
-func TestCheckAllParentsReady(t *testing.T) {
-	tests := []struct {
-		// Test case name for identifying failures
-		name string
-		// Minimum required pods per PodClique
-		pclqFQNToMinAvailable map[string]int
-		// Currently ready pods per PodClique (podclique name -> set of pod names)
-		currentPCLQReadyPods map[string]sets.Set[string]
-		// Expected readiness result
-		expected bool
-	}{
-		{
-			// All dependencies met should return true
-			name: "all_dependencies_met",
-			pclqFQNToMinAvailable: map[string]int{
-				"podclique-a": 2,
-				"podclique-b": 1,
-			},
-			currentPCLQReadyPods: map[string]sets.Set[string]{
-				"podclique-a": sets.New("pod-a-1", "pod-a-2"),
-				"podclique-b": sets.New("pod-b-1"),
-			},
-			expected: true,
-		},
-		{
-			// Exceeding minimum requirements should return true
-			name: "exceeding_requirements",
-			pclqFQNToMinAvailable: map[string]int{
-				"podclique-a": 1,
-			},
-			currentPCLQReadyPods: map[string]sets.Set[string]{
-				"podclique-a": sets.New("pod-a-1", "pod-a-2", "pod-a-3"),
-			},
-			expected: true,
-		},
-		{
-			// One dependency not met should return false
-			name: "one_dependency_not_met",
-			pclqFQNToMinAvailable: map[string]int{
-				"podclique-a": 2,
-				"podclique-b": 2,
-			},
-			currentPCLQReadyPods: map[string]sets.Set[string]{
-				"podclique-a": sets.New("pod-a-1", "pod-a-2"),
-				"podclique-b": sets.New("pod-b-1"), // Only 1 pod ready, need 2
-			},
-			expected: false,
-		},
-		{
-			// No ready pods should return false when pods required
-			name: "no_ready_pods",
-			pclqFQNToMinAvailable: map[string]int{
-				"podclique-a": 1,
-			},
-			currentPCLQReadyPods: map[string]sets.Set[string]{
-				"podclique-a": sets.New[string](), // Empty set
-			},
-			expected: false,
-		},
-		{
-			// Single pod requirement should be met with one ready pod
-			name: "single_pod_requirement",
-			pclqFQNToMinAvailable: map[string]int{
-				"podclique-a": 1,
-			},
-			currentPCLQReadyPods: map[string]sets.Set[string]{
-				"podclique-a": sets.New("pod-a-1"),
-			},
-			expected: true,
-		},
-		{
-			// Empty dependencies should return true
-			name:                  "no_dependencies",
-			pclqFQNToMinAvailable: map[string]int{},
-			currentPCLQReadyPods:  map[string]sets.Set[string]{},
-			expected:              true,
+			name:              "no_dependencies",
+			dependencies:      sets.New[string](),
+			currentReadyPCLQs: sets.New[string](),
+			expected:          true,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			deps := &ParentPodCliqueDependencies{
-				pclqFQNToMinAvailable: tt.pclqFQNToMinAvailable,
-				currentPCLQReadyPods:  tt.currentPCLQReadyPods,
-				allReadyCh:            make(chan struct{}, 1),
+				pclqFQNs:          tt.dependencies,
+				currentReadyPCLQs: tt.currentReadyPCLQs,
+				ready:             make(chan struct{}, 1),
 			}
 
 			deps.notifyIfAllParentsReady()
 
 			result := false
 			select {
-			case <-deps.allReadyCh:
+			case <-deps.ready:
 				result = true
 			default:
 			}
@@ -174,206 +76,172 @@ func TestCheckAllParentsReady(t *testing.T) {
 	}
 }
 
-// TestRefreshReadyPodsOfPodClique tests pod readiness tracking.
-func TestRefreshReadyPodsOfPodClique(t *testing.T) {
+func TestNewPodCliqueStateUsesProvidedNamespace(t *testing.T) {
+	deps := NewPodCliqueState(sets.New("podclique-a"), map[string][]string{
+		"podclique-b": {"TopologyAffinityReady"},
+	}, "test-ns")
+
+	assert.Equal(t, "test-ns", deps.namespace)
+	assert.True(t, deps.pclqFQNs.Has("podclique-a"))
+	assert.True(t, deps.pclqFQNToConditions["podclique-b"].Has("TopologyAffinityReady"))
+}
+
+func TestRefreshReadinessOfPodClique(t *testing.T) {
 	tests := []struct {
-		// Test case name for identifying failures
-		name string
-		// Initial state of ready pods
-		initialReadyPods map[string]sets.Set[string]
-		// Pod object to process
-		pod *corev1.Pod
-		// Whether this is a deletion event
-		deletionEvent bool
-		// Expected state after processing
-		expectedReadyPods map[string]sets.Set[string]
+		name                 string
+		initialReadyPCLQs    sets.Set[string]
+		pclq                 *grovecorev1alpha1.PodClique
+		expectedReadyPCLQs   sets.Set[string]
+		trackedPodCliqueFQNs sets.Set[string]
 	}{
 		{
-			// Ready pod should be added to tracking
-			name: "add_ready_pod",
-			initialReadyPods: map[string]sets.Set[string]{
-				"podclique-a": sets.New[string](),
-			},
-			pod: &corev1.Pod{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "podclique-a-pod-1",
-				},
-				Status: corev1.PodStatus{
-					Conditions: []corev1.PodCondition{
-						{
-							Type:   corev1.PodReady,
-							Status: corev1.ConditionTrue,
-						},
-					},
-				},
-			},
-			deletionEvent: false,
-			expectedReadyPods: map[string]sets.Set[string]{
-				"podclique-a": sets.New("podclique-a-pod-1"),
-			},
+			name:                 "ready_replicas_satisfy_min_available",
+			initialReadyPCLQs:    sets.New[string](),
+			pclq:                 podClique("podclique-a", 3, ptr.To[int32](2), 2, nil),
+			expectedReadyPCLQs:   sets.New("podclique-a"),
+			trackedPodCliqueFQNs: sets.New("podclique-a"),
 		},
 		{
-			// Non-ready pod should not be added to tracking
-			name: "add_non_ready_pod",
-			initialReadyPods: map[string]sets.Set[string]{
-				"podclique-a": sets.New[string](),
-			},
-			pod: &corev1.Pod{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "podclique-a-pod-1",
-				},
-				Status: corev1.PodStatus{
-					Conditions: []corev1.PodCondition{
-						{
-							Type:   corev1.PodReady,
-							Status: corev1.ConditionFalse,
-						},
-					},
-				},
-			},
-			deletionEvent: false,
-			expectedReadyPods: map[string]sets.Set[string]{
-				"podclique-a": sets.New[string](),
-			},
+			name:                 "ready_replicas_below_min_available",
+			initialReadyPCLQs:    sets.New("podclique-a"),
+			pclq:                 podClique("podclique-a", 3, ptr.To[int32](2), 1, nil),
+			expectedReadyPCLQs:   sets.New[string](),
+			trackedPodCliqueFQNs: sets.New("podclique-a"),
 		},
 		{
-			// Deletion event should remove pod from tracking
-			name: "delete_pod",
-			initialReadyPods: map[string]sets.Set[string]{
-				"podclique-a": sets.New("podclique-a-pod-1", "podclique-a-pod-2"),
-			},
-			pod: &corev1.Pod{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "podclique-a-pod-1",
-				},
-			},
-			deletionEvent: true,
-			expectedReadyPods: map[string]sets.Set[string]{
-				"podclique-a": sets.New("podclique-a-pod-2"),
-			},
+			name:                 "replicas_used_when_min_available_missing",
+			initialReadyPCLQs:    sets.New[string](),
+			pclq:                 podClique("podclique-a", 2, nil, 2, nil),
+			expectedReadyPCLQs:   sets.New("podclique-a"),
+			trackedPodCliqueFQNs: sets.New("podclique-a"),
 		},
 		{
-			// Pod not belonging to tracked PodClique should not affect state
-			name: "untracked_podclique",
-			initialReadyPods: map[string]sets.Set[string]{
-				"podclique-a": sets.New[string](),
-			},
-			pod: &corev1.Pod{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "podclique-b-pod-1",
-				},
-				Status: corev1.PodStatus{
-					Conditions: []corev1.PodCondition{
-						{
-							Type:   corev1.PodReady,
-							Status: corev1.ConditionTrue,
-						},
-					},
-				},
-			},
-			deletionEvent: false,
-			expectedReadyPods: map[string]sets.Set[string]{
-				"podclique-a": sets.New[string](),
-			},
+			name:                 "topology_affinity_requires_expanded_ready_replicas",
+			initialReadyPCLQs:    sets.New("podclique-a"),
+			pclq:                 topologyAffinityPodClique("podclique-a", 2, 5, []string{"rack-a", "rack-b", "rack-c"}),
+			expectedReadyPCLQs:   sets.New[string](),
+			trackedPodCliqueFQNs: sets.New("podclique-a"),
 		},
 		{
-			// Pod changing from ready to not ready should be removed
-			name: "pod_becomes_not_ready",
-			initialReadyPods: map[string]sets.Set[string]{
-				"podclique-a": sets.New("podclique-a-pod-1"),
-			},
-			pod: &corev1.Pod{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "podclique-a-pod-1",
-				},
-				Status: corev1.PodStatus{
-					Conditions: []corev1.PodCondition{
-						{
-							Type:   corev1.PodReady,
-							Status: corev1.ConditionFalse,
-						},
-					},
-				},
-			},
-			deletionEvent: false,
-			expectedReadyPods: map[string]sets.Set[string]{
-				"podclique-a": sets.New[string](),
-			},
+			name:                 "topology_affinity_ready_when_expanded_replicas_satisfied",
+			initialReadyPCLQs:    sets.New[string](),
+			pclq:                 topologyAffinityPodClique("podclique-a", 2, 6, []string{"rack-a", "rack-b", "rack-c"}),
+			expectedReadyPCLQs:   sets.New("podclique-a"),
+			trackedPodCliqueFQNs: sets.New("podclique-a"),
+		},
+		{
+			name:                 "topology_affinity_missing_status_is_not_ready",
+			initialReadyPCLQs:    sets.New("podclique-a"),
+			pclq:                 topologyAffinityPodClique("podclique-a", 2, 2, nil),
+			expectedReadyPCLQs:   sets.New[string](),
+			trackedPodCliqueFQNs: sets.New("podclique-a"),
+		},
+		{
+			name:                 "untracked_podclique_does_not_affect_state",
+			initialReadyPCLQs:    sets.New[string](),
+			pclq:                 podClique("podclique-b", 1, ptr.To[int32](1), 1, nil),
+			expectedReadyPCLQs:   sets.New[string](),
+			trackedPodCliqueFQNs: sets.New("podclique-a"),
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			deps := &ParentPodCliqueDependencies{
-				pclqFQNToMinAvailable: map[string]int{
-					"podclique-a": 1,
-				},
-				currentPCLQReadyPods: tt.initialReadyPods,
+				pclqFQNs:          tt.trackedPodCliqueFQNs,
+				currentReadyPCLQs: tt.initialReadyPCLQs,
 			}
 
-			deps.refreshReadyPodsOfPodClique(tt.pod, tt.deletionEvent)
+			deps.refreshReadinessOfPodClique(tt.pclq)
 
-			assert.Equal(t, tt.expectedReadyPods, deps.currentPCLQReadyPods, "Ready pods state should match expected")
+			assert.Equal(t, tt.expectedReadyPCLQs, deps.currentReadyPCLQs, "Ready PodClique state should match expected")
 		})
 	}
 }
 
-// TestNewPodCliqueStateWithInfo tests the core initialization logic without file dependencies.
-func TestNewPodCliqueStateWithInfo(t *testing.T) {
-	tests := []struct {
-		// Test case name for identifying failures
-		name string
-		// Pod clique dependencies to initialize with
-		dependencies map[string]int
-		// Namespace to set
-		namespace string
-		// PodGang name to set
-		podGang string
-	}{
-		{
-			// Basic initialization with multiple dependencies
-			name: "basic_initialization",
-			dependencies: map[string]int{
-				"podclique-a": 2,
-				"podclique-b": 3,
-			},
-			namespace: "test-namespace",
-			podGang:   "test-podgang",
+func TestRefreshConditionsOfPodClique(t *testing.T) {
+	deps := &ParentPodCliqueDependencies{
+		pclqFQNToConditions: map[string]sets.Set[string]{
+			"podclique-a": sets.New("TopologyAffinityReady"),
 		},
-		{
-			// Empty dependencies should work
-			name:         "empty_dependencies",
-			dependencies: map[string]int{},
-			namespace:    "test-namespace",
-			podGang:      "test-podgang",
-		},
-		{
-			// Empty namespace and podgang should work
-			name: "empty_namespace_podgang",
-			dependencies: map[string]int{
-				"podclique-x": 1,
-			},
-			namespace: "",
-			podGang:   "",
+		currentPCLQConditions: map[string]sets.Set[string]{
+			"podclique-a": sets.New[string](),
 		},
 	}
+	pclq := podClique("podclique-a", 1, ptr.To[int32](1), 1, map[string]string{
+		"TopologyAffinityReady": string(metav1.ConditionTrue),
+	})
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := newPodCliqueStateWithInfo(tt.dependencies, tt.namespace, tt.podGang)
+	deps.refreshConditionsOfPodClique(pclq)
+	assert.True(t, deps.currentPCLQConditions["podclique-a"].Has("TopologyAffinityReady"))
+}
 
-			require.NotNil(t, result, "Result should not be nil")
-			assert.Equal(t, tt.namespace, result.namespace, "Namespace should match")
-			assert.Equal(t, tt.podGang, result.podGang, "PodGang should match")
-			assert.Equal(t, tt.dependencies, result.pclqFQNToMinAvailable, "Dependencies should match")
+func topologyAffinityPodClique(name string, replicas, readyReplicas int32, targetDomains []string) *grovecorev1alpha1.PodClique {
+	pclq := podClique(name, replicas, ptr.To(replicas), readyReplicas, nil)
+	pclq.Spec.Affinity = &grovecorev1alpha1.PodCliqueAffinity{
+		TopologyAffinity: &grovecorev1alpha1.TopologyAffinity{
+			TopologyName: "fabric",
+			Domain:       "rack",
+			CliqueNames:  []string{"parent"},
+		},
+	}
+	if targetDomains != nil {
+		pclq.Status.TopologyAffinity = &grovecorev1alpha1.PodCliqueTopologyAffinityStatus{
+			TargetDomains: targetDomains,
+		}
+	}
+	return pclq
+}
 
-			// Verify ready pods map is initialized for all dependencies
-			assert.Len(t, result.currentPCLQReadyPods, len(tt.dependencies), "Ready pods map should have entry for each dependency")
-			for depName := range tt.dependencies {
-				readySet, exists := result.currentPCLQReadyPods[depName]
-				assert.True(t, exists, "Ready pods set should exist for dependency %s", depName)
-				assert.Equal(t, 0, readySet.Len(), "Ready pods set should be empty initially for %s", depName)
-			}
+func TestNotifyIfAllParentsReadyRequiresConditions(t *testing.T) {
+	deps := &ParentPodCliqueDependencies{
+		pclqFQNs: sets.New("parent-pclq"),
+		pclqFQNToConditions: map[string]sets.Set[string]{
+			"child-pclq": sets.New("TopologyAffinityReady"),
+		},
+		currentReadyPCLQs: sets.New("parent-pclq"),
+		currentPCLQConditions: map[string]sets.Set[string]{
+			"child-pclq": sets.New[string](),
+		},
+		ready: make(chan struct{}, 1),
+	}
+
+	deps.notifyIfAllParentsReady()
+	select {
+	case <-deps.ready:
+		t.Fatal("dependencies should not be ready until required conditions are true")
+	default:
+	}
+
+	deps.currentPCLQConditions["child-pclq"].Insert("TopologyAffinityReady")
+	deps.notifyIfAllParentsReady()
+	select {
+	case <-deps.ready:
+	default:
+		t.Fatal("dependencies should be ready")
+	}
+}
+
+func podClique(name string, replicas int32, minAvailable *int32, readyReplicas int32, conditions map[string]string) *grovecorev1alpha1.PodClique {
+	statusConditions := make([]metav1.Condition, 0, len(conditions))
+	for conditionType, conditionStatus := range conditions {
+		statusConditions = append(statusConditions, metav1.Condition{
+			Type:   conditionType,
+			Status: metav1.ConditionStatus(conditionStatus),
 		})
+	}
+
+	return &grovecorev1alpha1.PodClique{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: name,
+		},
+		Spec: grovecorev1alpha1.PodCliqueSpec{
+			Replicas:     replicas,
+			MinAvailable: minAvailable,
+		},
+		Status: grovecorev1alpha1.PodCliqueStatus{
+			ReadyReplicas: readyReplicas,
+			Conditions:    statusConditions,
+		},
 	}
 }

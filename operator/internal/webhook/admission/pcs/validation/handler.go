@@ -104,6 +104,9 @@ func (h *Handler) ValidateUpdate(ctx context.Context, oldObj, newObj runtime.Obj
 	if err != nil {
 		return nil, errors.WrapError(err, ErrValidateUpdatePodCliqueSet, string(admissionv1.Update), "failed to cast old object to PodCliqueSet")
 	}
+	if oldPCS.DeletionTimestamp != nil || newPCS.DeletionTimestamp != nil {
+		return nil, nil
+	}
 
 	v := newPCSValidator(newPCS, admissionv1.Update, h.tasConfig, h.schedulerConfig, h.client, h.schedRegistry)
 	warnings, errs := v.validate()

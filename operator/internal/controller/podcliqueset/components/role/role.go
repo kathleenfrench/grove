@@ -131,7 +131,7 @@ func (r _resource) Delete(ctx context.Context, logger logr.Logger, pcsObjMeta me
 	return nil
 }
 
-// buildResource configures the Role with pod access permissions.
+// buildResource configures the Role with the access permissions needed by the init container.
 func (r _resource) buildResource(pcs *grovecorev1alpha1.PodCliqueSet, role *rbacv1.Role) error {
 	role.Labels = getLabels(pcs.ObjectMeta)
 	if err := controllerutil.SetControllerReference(pcs, role, r.scheme); err != nil {
@@ -145,6 +145,11 @@ func (r _resource) buildResource(pcs *grovecorev1alpha1.PodCliqueSet, role *rbac
 		{
 			APIGroups: []string{""},
 			Resources: []string{"pods", "pods/status"},
+			Verbs:     []string{"get", "list", "watch"},
+		},
+		{
+			APIGroups: []string{grovecorev1alpha1.SchemeGroupVersion.Group},
+			Resources: []string{"podcliques"},
 			Verbs:     []string{"get", "list", "watch"},
 		},
 	}

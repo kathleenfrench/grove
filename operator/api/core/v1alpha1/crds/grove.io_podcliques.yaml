@@ -41,6 +41,39 @@ spec:
           spec:
             description: Spec defines the specification of a PodClique.
             properties:
+              affinity:
+                description: Affinity is a group of affinity scheduling rules for
+                  a PodClique.
+                properties:
+                  topologyAffinity:
+                    description: |-
+                      Describes PodClique topology affinity rules.
+                      This clique's pods are placed the same topology domain as the referenced clique.
+                    properties:
+                      cliqueNames:
+                        description: |-
+                          CliqueNames is the list of names of the PodCliques that are part of the affinity group.
+                          Pods are scheduled at the union of all scheduled PodClique domains.
+                        items:
+                          type: string
+                        type: array
+                      domain:
+                        description: |-
+                          Domain specifies the topology domain for creating affine replicas.
+                          Must reference a domain in the topology levels defined in the ClusterTopology CR name as set in TopologyName.
+                          Example: "rack" means replicas placed within all racks that the dependent cliqueNames are scheduled in.
+                        type: string
+                      topologyName:
+                        description: |-
+                          TopologyName is the name of the ClusterTopology resource to use for topology-aware scheduling.
+                          If topologyAffinity is set, topologyName and domain must both be specified.
+                        type: string
+                    required:
+                    - cliqueNames
+                    - domain
+                    - topologyName
+                    type: object
+                type: object
               autoScalingConfig:
                 description: ScaleConfig is the horizontal pod autoscaler configuration
                   for a PodClique.
@@ -9107,21 +9140,63 @@ spec:
                 format: int32
                 type: integer
               replicas:
-                description: Replicas is the total number of non-terminated Pods targeted
-                  by this PodClique.
+                description: |-
+                  Replicas is the replica count exposed through the scale subresource.
+                  For topology-affinity PodCliques, this matches Spec.Replicas so autoscalers scale per-domain replicas.
+                  Use TotalReplicas for the total non-terminated Pod count across all topology domains.
                 format: int32
                 type: integer
               scheduleGatedReplicas:
                 default: 0
-                description: |-
-                  ScheduleGatedReplicas is the number of Pods that have been created with one or more scheduling gate(s) set.
-                  Sum of ReadyReplicas and ScheduleGatedReplicas will always be <= Replicas.
+                description: ScheduleGatedReplicas is the number of Pods that have
+                  been created with one or more scheduling gate(s) set.
                 format: int32
                 type: integer
               scheduledReplicas:
                 default: 0
                 description: ScheduledReplicas is the number of Pods that have been
                   scheduled by the backend scheduler.
+                format: int32
+                type: integer
+              topologyAffinity:
+                description: |-
+                  TopologyAffinity captures the resolved topology-affinity state used by controllers that need to size or gate
+                  topology-affinity PodCliques without directly reading Node labels.
+                properties:
+                  allDomains:
+                    description: AllDomains is the set of all currently known values
+                      for LabelKey.
+                    items:
+                      type: string
+                    type: array
+                    x-kubernetes-list-type: set
+                  associatedDomains:
+                    description: AssociatedDomains is the set of topology domains
+                      used by associated PodCliques.
+                    items:
+                      type: string
+                    type: array
+                    x-kubernetes-list-type: set
+                  associatedReady:
+                    description: AssociatedReady indicates whether all associated
+                      PodCliques have reached their scheduled minimum.
+                    type: boolean
+                  labelKey:
+                    description: LabelKey is the node label key for the configured
+                      topology domain.
+                    type: string
+                  targetDomains:
+                    description: TargetDomains is the set of topology domains this
+                      PodClique should currently occupy.
+                    items:
+                      type: string
+                    type: array
+                    x-kubernetes-list-type: set
+                type: object
+              totalReplicas:
+                description: |-
+                  TotalReplicas is the total number of non-terminated Pods targeted by this PodClique.
+                  For topology-affinity PodCliques, this is the expanded count across all topology domains.
                 format: int32
                 type: integer
               updateProgress:

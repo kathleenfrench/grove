@@ -47,7 +47,7 @@ func TestCreateOperatorRegistry(t *testing.T) {
 		expectationsStore := expect.NewExpectationsStore()
 		schedRegistry := &utils.FakeSchedulerRegistry{}
 
-		registry := CreateOperatorRegistry(mgr, eventRecorder, expectationsStore, schedRegistry)
+		registry := CreateOperatorRegistry(mgr, eventRecorder, expectationsStore, schedRegistry, nil)
 
 		require.NotNil(t, registry)
 

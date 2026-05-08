@@ -18,13 +18,16 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	configv1alpha1 "github.com/ai-dynamo/grove/operator/api/config/v1alpha1"
 	"github.com/ai-dynamo/grove/operator/initc/cmd/opts"
 	"github.com/ai-dynamo/grove/operator/initc/internal"
+	groveconstants "github.com/ai-dynamo/grove/operator/internal/constants"
 	"github.com/ai-dynamo/grove/operator/internal/logger"
 )
 
@@ -43,23 +46,38 @@ func main() {
 
 	log.Info("Starting grove init container")
 
-	podCliqueDependencies, err := config.GetPodCliqueDependencies()
+	podCliqueDependencies, podCliqueConditionDependencies, err := config.GetPodCliqueDependencyConfig()
 	if err != nil {
 		log.Error(err, "Failed to parse CLI input")
 		os.Exit(1)
 	}
 
-	podCliqueState, err := internal.NewPodCliqueState(podCliqueDependencies, log)
+	namespace, err := readPodNamespace()
 	if err != nil {
+		log.Error(err, "Failed to read pod namespace")
 		os.Exit(1)
 	}
 
+	podCliqueState := internal.NewPodCliqueState(podCliqueDependencies, podCliqueConditionDependencies, namespace)
 	if err = podCliqueState.WaitForReady(ctx, log); err != nil {
 		log.Error(err, "Failed to wait for all parent PodCliques")
 		os.Exit(1)
 	}
 
 	log.Info("Successfully waited for all parent PodCliques to start up")
+}
+
+func readPodNamespace() (string, error) {
+	namespace, ok := os.LookupEnv(groveconstants.EnvVarPodNamespace)
+	if !ok {
+		return "", fmt.Errorf("environment variable %s is missing", groveconstants.EnvVarPodNamespace)
+	}
+
+	namespace = strings.TrimSpace(namespace)
+	if namespace == "" {
+		return "", fmt.Errorf("environment variable %s is empty", groveconstants.EnvVarPodNamespace)
+	}
+	return namespace, nil
 }
 
 // setupSignalHandler sets up the context for the application. Handles the SIGTERM and SIGINT signals.

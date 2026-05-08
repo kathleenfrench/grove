@@ -18,13 +18,13 @@ package opts
 
 import (
 	"fmt"
-	"strconv"
 	"strings"
 
 	grovecorev1alpha1 "github.com/ai-dynamo/grove/operator/api/core/v1alpha1"
 	groveerr "github.com/ai-dynamo/grove/operator/internal/errors"
 
 	"github.com/spf13/pflag"
+	"k8s.io/apimachinery/pkg/util/sets"
 )
 
 // Constants for error codes.
@@ -38,50 +38,47 @@ const (
 
 // CLIOptions defines the configuration that is passed to the init container.
 type CLIOptions struct {
-	podCliques []string // PodClique names with their minAvailable replicas in format "name:count"
+	podCliques []string // PodClique names with an optional condition in format "name[:condition]"
 }
 
 // RegisterFlags registers all the flags that are defined for the init container.
 func (c *CLIOptions) RegisterFlags() {
-	// --podcliques=<podclique-fqn>:<minAvailable-replicas>
-	// --podcliques=podclique-a:3 --podcliques=podclique-b:4 and so on for each PodClique.
-	pflag.StringArrayVarP(&c.podCliques, "podcliques", "p", nil, "podclique name and minAvailable replicas seperated by comma, repeated for each podclique")
+	// --podcliques=<podclique-fqn>[:<condition-type>]
+	// --podcliques=podclique-a --podcliques=podclique-b:TopologyAffinityReady and so on for each PodClique.
+	pflag.StringArrayVarP(&c.podCliques, "podcliques", "p", nil, "podclique name and optional condition type separated by colon, repeated for each podclique")
 }
 
-// GetPodCliqueDependencies returns the PodClique information as a map with the minAvailable associated with each PodClique name.
-func (c *CLIOptions) GetPodCliqueDependencies() (map[string]int, error) {
-	podCliqueDependencies := make(map[string]int)
-
-	// Parse each "name:count" pair into the dependencies map
+// GetPodCliqueDependencyConfig returns readiness and condition dependencies parsed from all initc flags.
+func (c *CLIOptions) GetPodCliqueDependencyConfig() (sets.Set[string], map[string][]string, error) {
+	podCliqueDependencies := sets.New[string]()
+	podCliqueConditionDependencies := make(map[string][]string)
 	for _, pair := range c.podCliques {
 		pair = strings.TrimSpace(pair)
 		if pair == "" {
 			continue
 		}
 
-		nameAndMinAvailable := strings.Split(pair, ":")
-		if len(nameAndMinAvailable) != 2 {
-			return nil, groveerr.New(errCodeInvalidInput, operationParseFlag, fmt.Sprintf("expected two values per podclique, found %d", len(nameAndMinAvailable)))
+		parts := strings.Split(pair, ":")
+		if len(parts) != 1 && len(parts) != 2 {
+			return nil, nil, groveerr.New(errCodeInvalidInput, operationParseFlag, fmt.Sprintf("expected one or two values per podclique, found %d", len(parts)))
 		}
 
-		replicas, err := strconv.Atoi(strings.TrimSpace(nameAndMinAvailable[1]))
-		if err != nil {
-			return nil, groveerr.WrapError(err, errCodeInvalidInput, operationParseFlag, "failed to convert replicas to int")
-		}
-
-		if replicas <= 0 {
-			return nil, groveerr.New(errCodeInvalidInput, operationParseFlag, fmt.Sprintf("replica count must be positive, got %d", replicas))
-		}
-
-		podCliqueName := strings.TrimSpace(nameAndMinAvailable[0])
+		podCliqueName := strings.TrimSpace(parts[0])
 		if podCliqueName == "" {
-			return nil, groveerr.New(errCodeInvalidInput, operationParseFlag, "podclique name cannot be empty")
+			return nil, nil, groveerr.New(errCodeInvalidInput, operationParseFlag, "podclique name cannot be empty")
 		}
 
-		podCliqueDependencies[podCliqueName] = replicas
+		if len(parts) == 1 {
+			podCliqueDependencies.Insert(podCliqueName)
+		} else {
+			conditionType := strings.TrimSpace(parts[1])
+			if conditionType == "" {
+				return nil, nil, groveerr.New(errCodeInvalidInput, operationParseFlag, "podclique condition type cannot be empty")
+			}
+			podCliqueConditionDependencies[podCliqueName] = append(podCliqueConditionDependencies[podCliqueName], conditionType)
+		}
 	}
-
-	return podCliqueDependencies, nil
+	return podCliqueDependencies, podCliqueConditionDependencies, nil
 }
 
 // InitializeCLIOptions parses the command line flags into CLIOptions.

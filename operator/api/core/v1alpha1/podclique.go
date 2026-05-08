@@ -20,6 +20,7 @@ import (
 	autoscalingv2 "k8s.io/api/autoscaling/v2"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/utils/ptr"
 )
 
 // +genclient
@@ -78,6 +79,9 @@ type PodCliqueSpec struct {
 	// ScaleConfig is the horizontal pod autoscaler configuration for a PodClique.
 	// +optional
 	ScaleConfig *AutoScalingConfig `json:"autoScalingConfig,omitempty"`
+	// Affinity is a group of affinity scheduling rules for a PodClique.
+	// +optional
+	Affinity *PodCliqueAffinity `json:"affinity,omitempty"`
 }
 
 // AutoScalingConfig defines the configuration for the horizontal pod autoscaler.
@@ -108,8 +112,17 @@ type PodCliqueStatus struct {
 	ObservedGeneration *int64 `json:"observedGeneration,omitempty"`
 	// LastErrors captures the last errors observed by the controller when reconciling the PodClique.
 	LastErrors []LastError `json:"lastErrors,omitempty"`
-	// Replicas is the total number of non-terminated Pods targeted by this PodClique.
+	// Replicas is the replica count exposed through the scale subresource.
+	// For topology-affinity PodCliques, this matches Spec.Replicas so autoscalers scale per-domain replicas.
+	// Use TotalReplicas for the total non-terminated Pod count across all topology domains.
 	Replicas int32 `json:"replicas,omitempty"`
+	// TotalReplicas is the total number of non-terminated Pods targeted by this PodClique.
+	// For topology-affinity PodCliques, this is the expanded count across all topology domains.
+	TotalReplicas int32 `json:"totalReplicas,omitempty"`
+	// TopologyAffinity captures the resolved topology-affinity state used by controllers that need to size or gate
+	// topology-affinity PodCliques without directly reading Node labels.
+	// +optional
+	TopologyAffinity *PodCliqueTopologyAffinityStatus `json:"topologyAffinity,omitempty"`
 	// ReadyReplicas is the number of ready Pods targeted by this PodClique.
 	// +kubebuilder:default=0
 	ReadyReplicas int32 `json:"readyReplicas"`
@@ -117,7 +130,6 @@ type PodCliqueStatus struct {
 	// +kubebuilder:default=0
 	UpdatedReplicas int32 `json:"updatedReplicas"`
 	// ScheduleGatedReplicas is the number of Pods that have been created with one or more scheduling gate(s) set.
-	// Sum of ReadyReplicas and ScheduleGatedReplicas will always be <= Replicas.
 	// +kubebuilder:default=0
 	ScheduleGatedReplicas int32 `json:"scheduleGatedReplicas"`
 	// ScheduledReplicas is the number of Pods that have been scheduled by the backend scheduler.
@@ -137,6 +149,43 @@ type PodCliqueStatus struct {
 	CurrentPodTemplateHash *string `json:"currentPodTemplateHash,omitempty"`
 	// UpdateProgress provides details about the ongoing update of the PodClique.
 	UpdateProgress *PodCliqueUpdateProgress `json:"updateProgress,omitempty"`
+}
+
+// PodCliqueTopologyAffinityStatus captures the resolved topology-affinity state for a PodClique.
+type PodCliqueTopologyAffinityStatus struct {
+	// LabelKey is the node label key for the configured topology domain.
+	// +optional
+	LabelKey string `json:"labelKey,omitempty"`
+	// AllDomains is the set of all currently known values for LabelKey.
+	// +listType=set
+	// +optional
+	AllDomains []string `json:"allDomains,omitempty"`
+	// AssociatedDomains is the set of topology domains used by associated PodCliques.
+	// +listType=set
+	// +optional
+	AssociatedDomains []string `json:"associatedDomains,omitempty"`
+	// TargetDomains is the set of topology domains this PodClique should currently occupy.
+	// +listType=set
+	// +optional
+	TargetDomains []string `json:"targetDomains,omitempty"`
+	// AssociatedReady indicates whether all associated PodCliques have reached their scheduled minimum.
+	// +optional
+	AssociatedReady bool `json:"associatedReady,omitempty"`
+}
+
+// MinAvailable returns the minimum replica count that dependent PodCliques
+// should wait for after expanding topology-affinity replicas across target domains.
+// The boolean is false when the value depends on topology-affinity status that is
+// not available yet.
+func (pclq *PodClique) MinAvailable() (int32, bool) {
+	if pclq.Spec.Affinity != nil && pclq.Spec.Affinity.TopologyAffinity != nil {
+		if pclq.Status.TopologyAffinity == nil {
+			return 0, false
+		}
+		return int32(len(pclq.Status.TopologyAffinity.TargetDomains)) * pclq.Spec.Replicas, true
+	}
+
+	return ptr.Deref(pclq.Spec.MinAvailable, pclq.Spec.Replicas), true
 }
 
 // PodCliqueUpdateProgress provides details about the ongoing update of the PodClique.

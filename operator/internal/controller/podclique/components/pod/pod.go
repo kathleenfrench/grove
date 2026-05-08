@@ -26,6 +26,7 @@ import (
 	grovecorev1alpha1 "github.com/ai-dynamo/grove/operator/api/core/v1alpha1"
 	"github.com/ai-dynamo/grove/operator/internal/controller/common/component"
 	componentutils "github.com/ai-dynamo/grove/operator/internal/controller/common/component/utils"
+	"github.com/ai-dynamo/grove/operator/internal/controller/nodelabels"
 	groveerr "github.com/ai-dynamo/grove/operator/internal/errors"
 	"github.com/ai-dynamo/grove/operator/internal/expect"
 	"github.com/ai-dynamo/grove/operator/internal/resourceclaim"
@@ -64,6 +65,7 @@ const (
 	errCodeMissingPodCliqueTemplate            grovecorev1alpha1.ErrorCode = "ERR_MISSING_PODCLIQUE_TEMPLATE"
 	errCodeGetPodCliqueTemplate                grovecorev1alpha1.ErrorCode = "ERR_GET_PODCLIQUE_TEMPLATE"
 	errCodeUpdatePodCliqueStatus               grovecorev1alpha1.ErrorCode = "ERR_UPDATE_PODCLIQUE_STATUS"
+	errCodeGetTopologyAffinity                 grovecorev1alpha1.ErrorCode = "ERR_GET_TOPOLOGY_AFFINITY"
 )
 
 const (
@@ -76,16 +78,18 @@ type _resource struct {
 	eventRecorder     record.EventRecorder
 	expectationsStore *expect.ExpectationsStore
 	schedRegistry     scheduler.Registry
+	nodeLabels        nodelabels.Cache
 }
 
 // New creates a new Pod operator for managing Pod resources within PodCliques
-func New(client client.Client, scheme *runtime.Scheme, eventRecorder record.EventRecorder, expectationsStore *expect.ExpectationsStore, schedRegistry scheduler.Registry) component.Operator[grovecorev1alpha1.PodClique] {
+func New(client client.Client, scheme *runtime.Scheme, eventRecorder record.EventRecorder, expectationsStore *expect.ExpectationsStore, schedRegistry scheduler.Registry, nodeLabels nodelabels.Cache) component.Operator[grovecorev1alpha1.PodClique] {
 	return &_resource{
 		client:            client,
 		scheme:            scheme,
 		eventRecorder:     eventRecorder,
 		expectationsStore: expectationsStore,
 		schedRegistry:     schedRegistry,
+		nodeLabels:        nodeLabels,
 	}
 }
 
@@ -194,10 +198,12 @@ func (r _resource) buildResource(pcs *grovecorev1alpha1.PodCliqueSet, pclq *grov
 	if err := injectAllResourceClaimRefs(pcs, pclq, &pod.Spec, pcsReplicaIndex, podIndex); err != nil {
 		return err
 	}
-	// If there is a need to enforce a Startup-Order then configure the init container and add it to the Pod Spec.
-	if len(pclq.Spec.StartsAfter) != 0 {
+	// If there is a need to enforce startup ordering or topology-affinity finalization,
+	// configure the init container and add it to the Pod Spec.
+	if requiresPodInitContainer(pclq) {
 		return configurePodInitContainer(pcs, pclq, pod)
 	}
+
 	return nil
 }
 

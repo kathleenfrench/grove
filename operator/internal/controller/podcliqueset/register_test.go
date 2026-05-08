@@ -251,3 +251,25 @@ func TestPodCliqueScalingGroupPredicateStatusChangesAffectingUpdatedAccounting(t
 		})
 	}
 }
+
+func TestHasAnyStatusReplicasChangedIncludesTopologyAffinityStatus(t *testing.T) {
+	oldStatus := grovecorev1alpha1.PodCliqueStatus{
+		TopologyAffinity: &grovecorev1alpha1.PodCliqueTopologyAffinityStatus{
+			TargetDomains: []string{"rack-a"},
+		},
+	}
+	newStatus := grovecorev1alpha1.PodCliqueStatus{
+		TopologyAffinity: &grovecorev1alpha1.PodCliqueTopologyAffinityStatus{
+			TargetDomains: []string{"rack-a", "rack-b"},
+		},
+	}
+
+	assert.True(t, hasAnyStatusReplicasChanged(oldStatus, newStatus))
+}
+
+func TestHasAnyStatusReplicasChangedIncludesTotalReplicas(t *testing.T) {
+	oldStatus := grovecorev1alpha1.PodCliqueStatus{Replicas: 2, TotalReplicas: 2}
+	newStatus := grovecorev1alpha1.PodCliqueStatus{Replicas: 2, TotalReplicas: 4}
+
+	assert.True(t, hasAnyStatusReplicasChanged(oldStatus, newStatus))
+}

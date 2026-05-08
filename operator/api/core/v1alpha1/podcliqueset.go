@@ -98,7 +98,7 @@ type PodCliqueSetStatus struct {
 	// the pods that match this selector.
 	Selector *string `json:"hpaPodSelector,omitempty"`
 	// PodGangStatuses captures the status for all the PodGang's that are part of the PodCliqueSet.
-	PodGangStatutes []PodGangStatus `json:"podGangStatuses,omitempty"`
+	PodGangStatuses []PodGangStatus `json:"podGangStatuses,omitempty"`
 	// CurrentGenerationHash is a hash value generated out of a collection of fields in a PodCliqueSet.
 	// Since only a subset of fields is taken into account when generating the hash, not every change in the PodCliqueSetSpec will
 	// be accounted for when generating this hash value. A field in PodCliqueSetSpec is included if a change to it triggers
@@ -262,6 +262,31 @@ type PodCliqueTemplateSpec struct {
 	// Specification of the desired behavior of a PodClique.
 	// More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#spec-and-status
 	Spec PodCliqueSpec `json:"spec"`
+}
+
+// PodCliqueAffinity is a group of affinity scheduling rules for a PodClique.
+type PodCliqueAffinity struct {
+	// Describes PodClique topology affinity rules.
+	// This clique's pods are placed the same topology domain as the referenced clique.
+	// +optional
+	TopologyAffinity *TopologyAffinity `json:"topologyAffinity,omitempty"`
+}
+
+// TopologyAffinity defines PodClique topology affinity rules.
+type TopologyAffinity struct {
+	// TopologyName is the name of the ClusterTopology resource to use for topology-aware scheduling.
+	// If topologyAffinity is set, topologyName and domain must both be specified.
+	// +required
+	TopologyName string `json:"topologyName"`
+	// Domain specifies the topology domain for creating affine replicas.
+	// Must reference a domain in the topology levels defined in the ClusterTopology CR name as set in TopologyName.
+	// Example: "rack" means replicas placed within all racks that the dependent cliqueNames are scheduled in.
+	// +required
+	Domain string `json:"domain"`
+	// CliqueNames is the list of names of the PodCliques that are part of the affinity group.
+	// Pods are scheduled at the union of all scheduled PodClique domains.
+	// +required
+	CliqueNames []string `json:"cliqueNames"`
 }
 
 // TopologyConstraint defines topology placement requirements.

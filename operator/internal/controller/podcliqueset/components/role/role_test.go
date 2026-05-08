@@ -179,10 +179,13 @@ func TestSync(t *testing.T) {
 		assert.Equal(t, apicommon.LabelManagedByValue, role.Labels[apicommon.LabelManagedByKey])
 		assert.Equal(t, "test-pcs", role.Labels[apicommon.LabelPartOfKey])
 		// Verify rules
-		require.Len(t, role.Rules, 1)
+		require.Len(t, role.Rules, 2)
 		assert.Equal(t, []string{""}, role.Rules[0].APIGroups)
 		assert.Equal(t, []string{"pods", "pods/status"}, role.Rules[0].Resources)
 		assert.Equal(t, []string{"get", "list", "watch"}, role.Rules[0].Verbs)
+		assert.Equal(t, []string{grovecorev1alpha1.SchemeGroupVersion.Group}, role.Rules[1].APIGroups)
+		assert.Equal(t, []string{"podcliques"}, role.Rules[1].Resources)
+		assert.Equal(t, []string{"get", "list", "watch"}, role.Rules[1].Verbs)
 	})
 
 	// Test when role already exists with correct owner

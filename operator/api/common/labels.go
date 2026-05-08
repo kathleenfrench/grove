@@ -47,6 +47,10 @@ const (
 	LabelPodTemplateHash = "grove.io/pod-template-hash"
 	// LabelSchedulerName is a label on PodGang that indicates which scheduler backend should sync this PodGang.
 	LabelSchedulerName = "grove.io/scheduler-name"
+	// LabelTopologyAffinityValue is a key for the topology value that a topology-affinity pod was created for.
+	LabelTopologyAffinityValue = "grove.io/topology-affinity-value"
+	// LabelTopologyAffinityDomain is a key for the topology domain that a topology-affinity pod was created for.
+	LabelTopologyAffinityDomain = "grove.io/topology-affinity-domain"
 )
 
 // Labels for setting component names for all managed resources whose lifecycle

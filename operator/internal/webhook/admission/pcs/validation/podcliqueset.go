@@ -271,6 +271,7 @@ func (v *pcsValidator) validatePodCliqueTemplates(fldPath *field.Path) ([]string
 	if v.isStartupTypeExplicit() {
 		allErrs = append(allErrs, validateCliqueDependencies(cliqueTemplateSpecs, fldPath)...)
 	}
+	allErrs = append(allErrs, validateTopologyAffinityDependencies(cliqueTemplateSpecs, fldPath)...)
 
 	return warnings, allErrs
 }
@@ -445,6 +446,7 @@ func (v *pcsValidator) validatePodCliqueTemplateSpec(cliqueTemplateSpec *groveco
 	if len(errs) != 0 {
 		allErrs = append(allErrs, errs...)
 	}
+	allErrs = append(allErrs, v.validatePodCliqueTopologyAffinity(cliqueTemplateSpec, fldPath)...)
 	allErrs = append(allErrs, v.validatePodCliqueNameConstraints(fldPath, cliqueTemplateSpec, scalingGroupCliqueNames)...)
 
 	return warnings, allErrs
@@ -994,7 +996,9 @@ func (v *pcsValidator) validatePodCliqueUpdate(oldCliques []*grovecorev1alpha1.P
 		allErrs = append(allErrs, apivalidation.ValidateImmutableField(newClique.Spec.StartsAfter, oldIndexCliqueTuple.B.Spec.StartsAfter, cliqueFldPath.Child("startsAfter"))...)
 		allErrs = append(allErrs, apivalidation.ValidateImmutableField(newClique.Spec.PodSpec.SchedulerName, oldIndexCliqueTuple.B.Spec.PodSpec.SchedulerName, cliqueFldPath.Child("podSpec", "schedulerName"))...)
 		allErrs = append(allErrs, apivalidation.ValidateImmutableField(newClique.ResourceSharing, oldIndexCliqueTuple.B.ResourceSharing, fldPath.Index(newCliqueIndex).Child("resourceSharing"))...)
+		allErrs = append(allErrs, v.validatePodCliqueTopologyAffinity(newClique, fldPath.Index(newCliqueIndex))...)
 	}
+	allErrs = append(allErrs, validateTopologyAffinityDependencies(newCliques, fldPath)...)
 
 	return allErrs
 }

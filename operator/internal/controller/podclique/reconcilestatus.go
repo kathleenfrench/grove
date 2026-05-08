@@ -26,6 +26,7 @@ import (
 	internalconstants "github.com/ai-dynamo/grove/operator/internal/constants"
 	ctrlcommon "github.com/ai-dynamo/grove/operator/internal/controller/common"
 	componentutils "github.com/ai-dynamo/grove/operator/internal/controller/common/component/utils"
+	commontopology "github.com/ai-dynamo/grove/operator/internal/controller/common/topology"
 	k8sutils "github.com/ai-dynamo/grove/operator/internal/utils/kubernetes"
 
 	"github.com/go-logr/logr"
@@ -62,14 +63,20 @@ func (r *Reconciler) reconcileStatus(ctx context.Context, logger logr.Logger, pc
 
 	podCategories := k8sutils.CategorizePodsByConditionType(logger, existingPods)
 
+	topologyAffinityStatus, err := commontopology.ResolvePodCliqueTopologyAffinityStatus(ctx, r.client, r.nodeLabels, pcs, pclq)
+	if err != nil {
+		logger.Error(err, "failed to resolve PodClique topology affinity state")
+		return ctrlcommon.ReconcileWithErrors("failed to resolve PodClique topology affinity state", err)
+	}
+	// mutate PodClique Status Replicas, ReadyReplicas, ScheduleGatedReplicas and UpdatedReplicas.
+	mutateReplicas(pclq, podCategories, len(existingPods), topologyAffinityStatus != nil)
+	mutateTopologyAffinityStatus(pclq, topologyAffinityStatus)
+	mutateUpdatedReplica(pcs, pclq, existingPods)
 	// mutate PodClique.Status.CurrentPodTemplateHash and PodClique.Status.CurrentPodCliqueSetGenerationHash
 	if err = mutateCurrentHashes(logger, pcs, pclq); err != nil {
 		logger.Error(err, "failed to compute PodClique current hashes")
 		return ctrlcommon.ReconcileWithErrors("failed to compute PodClique current hashes", err)
 	}
-	// mutate PodClique Status Replicas, ReadyReplicas, ScheduleGatedReplicas and UpdatedReplicas.
-	mutateReplicas(pclq, podCategories, len(existingPods))
-	mutateUpdatedReplica(pcs, pclq, existingPods)
 
 	// mutate the conditions only if the PodClique has been successfully reconciled at least once.
 	// This prevents prematurely setting incorrect conditions.
@@ -79,6 +86,7 @@ func (r *Reconciler) reconcileStatus(ctx context.Context, logger logr.Logger, pc
 			len(podCategories[k8sutils.PodHasAtleastOneContainerWithNonZeroExitCode]),
 			len(podCategories[k8sutils.PodStartedButNotReady]))
 		r.emitAllScheduledReplicasLostIfNeeded(pclq, originalStatus.ScheduledReplicas)
+		mutateTopologyAffinityReadyCondition(pclq, topologyAffinityStatus, existingPods)
 	}
 
 	// mutate the selector that will be used by an autoscaler.
@@ -108,7 +116,7 @@ func (r *Reconciler) reconcileStatus(ctx context.Context, logger logr.Logger, pc
 
 // mutateCurrentHashes updates the PodClique's current template and generation hashes when updates are complete
 func mutateCurrentHashes(logger logr.Logger, pcs *grovecorev1alpha1.PodCliqueSet, pclq *grovecorev1alpha1.PodClique) error {
-	if componentutils.IsPCLQAutoUpdateInProgress(pclq) || pclq.Status.UpdatedReplicas != pclq.Status.Replicas {
+	if componentutils.IsPCLQAutoUpdateInProgress(pclq) {
 		logger.Info("PodClique is currently updating, cannot set PodCliqueSet CurrentGenerationHash yet")
 		return nil
 	}
@@ -127,6 +135,10 @@ func mutateCurrentHashes(logger logr.Logger, pcs *grovecorev1alpha1.PodCliqueSet
 			pclq.Status.CurrentPodCliqueSetGenerationHash = ptr.To(pcsGenerationHashes.Canonical)
 		}
 	} else if componentutils.IsLastPCLQUpdateCompleted(pclq) {
+		if pclq.Status.UpdatedReplicas != expectedUpdatedReplicas(pclq) {
+			logger.Info("PodClique pods are not updated, cannot set PodCliqueSet CurrentGenerationHash yet")
+			return nil
+		}
 		logger.Info("PodClique update has completed, setting CurrentPodCliqueSetGenerationHash")
 		if expectedPodTemplateHashes.Matches(pclq.Status.UpdateProgress.PodTemplateHash) &&
 			pcsGenerationHashes.Matches(pclq.Status.UpdateProgress.PodCliqueSetGenerationHash) {
@@ -148,11 +160,20 @@ func isPodCliqueTemplateHashCurrent(pclq *grovecorev1alpha1.PodClique, expectedP
 		expectedPodTemplateHashes.Matches(*pclq.Status.CurrentPodTemplateHash)
 }
 
+func expectedUpdatedReplicas(pclq *grovecorev1alpha1.PodClique) int32 {
+	return int32(statusDesiredReplicas(pclq))
+}
+
 // mutateReplicas updates the PodClique status with current replica counts based on pod categorization
-func mutateReplicas(pclq *grovecorev1alpha1.PodClique, podCategories map[corev1.PodConditionType][]*corev1.Pod, numExistingPods int) {
+func mutateReplicas(pclq *grovecorev1alpha1.PodClique, podCategories map[corev1.PodConditionType][]*corev1.Pod, numExistingPods int, hasTopologyAffinity bool) {
 	// mutate the PCLQ status with current number of schedule gated, ready pods and updated pods.
 	numNonTerminatingPods := int32(numExistingPods - len(podCategories[k8sutils.TerminatingPod]))
-	pclq.Status.Replicas = numNonTerminatingPods
+	pclq.Status.TotalReplicas = numNonTerminatingPods
+	if hasTopologyAffinity {
+		pclq.Status.Replicas = pclq.Spec.Replicas
+	} else {
+		pclq.Status.Replicas = numNonTerminatingPods
+	}
 	pclq.Status.ReadyReplicas = int32(len(podCategories[corev1.PodReady]))
 	pclq.Status.ScheduleGatedReplicas = int32(len(podCategories[k8sutils.ScheduleGatedPod]))
 	pclq.Status.ScheduledReplicas = int32(len(podCategories[corev1.PodScheduled]))
@@ -247,7 +268,7 @@ func computeMinAvailableBreachedCondition(pclq *grovecorev1alpha1.PodClique, num
 	}
 	// dereferencing is considered safe as MinAvailable will always be set by the defaulting webhook. If this changes in the future,
 	// make sure that you check for nil explicitly.
-	minAvailable := int(*pclq.Spec.MinAvailable)
+	minAvailable := statusMinAvailable(pclq)
 	scheduledReplicas := int(pclq.Status.ScheduledReplicas)
 	now := metav1.Now()
 
@@ -310,12 +331,13 @@ func mutatePodCliqueScheduledCondition(pclq *grovecorev1alpha1.PodClique) {
 // computePodCliqueScheduledCondition calculates the PodCliqueScheduled condition based on minimum availability requirements
 func computePodCliqueScheduledCondition(pclq *grovecorev1alpha1.PodClique) metav1.Condition {
 	now := metav1.Now()
-	if pclq.Status.ScheduledReplicas < *pclq.Spec.MinAvailable {
+	minAvailable := statusMinAvailable(pclq)
+	if pclq.Status.ScheduledReplicas < int32(minAvailable) {
 		return metav1.Condition{
 			Type:               constants.ConditionTypePodCliqueScheduled,
 			Status:             metav1.ConditionFalse,
 			Reason:             constants.ConditionReasonInsufficientScheduledPods,
-			Message:            fmt.Sprintf("Insufficient scheduled pods. expected at least: %d, found: %d", *pclq.Spec.MinAvailable, pclq.Status.ScheduledReplicas),
+			Message:            fmt.Sprintf("Insufficient scheduled pods. expected at least: %d, found: %d", minAvailable, pclq.Status.ScheduledReplicas),
 			LastTransitionTime: now,
 		}
 	}
@@ -323,7 +345,92 @@ func computePodCliqueScheduledCondition(pclq *grovecorev1alpha1.PodClique) metav
 		Type:               constants.ConditionTypePodCliqueScheduled,
 		Status:             metav1.ConditionTrue,
 		Reason:             constants.ConditionReasonSufficientScheduledPods,
-		Message:            fmt.Sprintf("Sufficient scheduled pods found. expected at least: %d, found: %d", *pclq.Spec.MinAvailable, pclq.Status.ScheduledReplicas),
+		Message:            fmt.Sprintf("Sufficient scheduled pods found. expected at least: %d, found: %d", minAvailable, pclq.Status.ScheduledReplicas),
+		LastTransitionTime: now,
+	}
+}
+
+func statusMinAvailable(pclq *grovecorev1alpha1.PodClique) int {
+	if pclq.Status.TopologyAffinity != nil {
+		return statusDesiredReplicas(pclq)
+	}
+	return int(*pclq.Spec.MinAvailable)
+}
+
+func statusDesiredReplicas(pclq *grovecorev1alpha1.PodClique) int {
+	if pclq.Status.TopologyAffinity != nil {
+		return len(pclq.Status.TopologyAffinity.TargetDomains) * int(pclq.Spec.Replicas)
+	}
+	return int(pclq.Status.Replicas)
+}
+
+func mutateTopologyAffinityStatus(pclq *grovecorev1alpha1.PodClique, state *grovecorev1alpha1.PodCliqueTopologyAffinityStatus) {
+	if state == nil {
+		pclq.Status.TopologyAffinity = nil
+		return
+	}
+	pclq.Status.TopologyAffinity = state.DeepCopy()
+}
+
+func mutateTopologyAffinityReadyCondition(pclq *grovecorev1alpha1.PodClique, state *grovecorev1alpha1.PodCliqueTopologyAffinityStatus, existingPods []*corev1.Pod) {
+	if state == nil {
+		meta.RemoveStatusCondition(&pclq.Status.Conditions, constants.ConditionTopologyAffinityReady)
+		return
+	}
+	newCondition := computeTopologyAffinityReadyCondition(pclq, state, existingPods)
+	if k8sutils.HasConditionChanged(pclq.Status.Conditions, newCondition) {
+		meta.SetStatusCondition(&pclq.Status.Conditions, newCondition)
+	}
+}
+
+func computeTopologyAffinityReadyCondition(pclq *grovecorev1alpha1.PodClique, state *grovecorev1alpha1.PodCliqueTopologyAffinityStatus, existingPods []*corev1.Pod) metav1.Condition {
+	now := metav1.Now()
+	if !state.AssociatedReady {
+		return metav1.Condition{
+			Type:               constants.ConditionTopologyAffinityReady,
+			Status:             metav1.ConditionFalse,
+			Reason:             constants.ConditionReasonInsufficientScheduledPods,
+			Message:            "Associated PodCliques have not reached their scheduled minimum",
+			LastTransitionTime: now,
+		}
+	}
+	targetDomains := lo.SliceToMap(state.TargetDomains, func(domain string) (string, struct{}) {
+		return domain, struct{}{}
+	})
+	expectedPerDomain := int(pclq.Spec.Replicas)
+	counts := make(map[string]int, len(state.TargetDomains))
+	for _, pod := range existingPods {
+		if pod.DeletionTimestamp != nil {
+			continue
+		}
+		value := pod.Labels[apicommon.LabelTopologyAffinityValue]
+		if _, ok := targetDomains[value]; !ok {
+			return metav1.Condition{
+				Type:               constants.ConditionTopologyAffinityReady,
+				Status:             metav1.ConditionFalse,
+				Reason:             constants.ConditionReasonInsufficientScheduledPods,
+				Message:            "Pods outside associated topology domains are still present",
+				LastTransitionTime: now,
+			}
+		}
+		counts[value]++
+	}
+	for _, domain := range state.TargetDomains {
+		if counts[domain] != expectedPerDomain {
+			return metav1.Condition{
+				Type:               constants.ConditionTopologyAffinityReady,
+				Status:             metav1.ConditionFalse,
+				Reason:             constants.ConditionReasonInsufficientScheduledPods,
+				Message:            fmt.Sprintf("Topology domain %q has %d pods, expected %d", domain, counts[domain], expectedPerDomain),
+				LastTransitionTime: now,
+			}
+		}
+	}
+	return metav1.Condition{
+		Type:               constants.ConditionTopologyAffinityReady,
+		Status:             metav1.ConditionTrue,
+		Reason:             constants.ConditionReasonSufficientScheduledPods,
+		Message:            "Topology affinity pods match associated topology domains",
 		LastTransitionTime: now,
 	}
 }

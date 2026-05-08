@@ -123,6 +123,8 @@ const (
 	// ConditionTopologyLevelsUnavailable indicates that the required topology levels defined on a PodCliqueSet for topology-aware scheduling are no longer available.
 	// This can happen when the ClusterTopologyBinding resource is modified which removes one or more levels required by the PodCliqueSet.
 	ConditionTopologyLevelsUnavailable = "TopologyLevelsUnavailable"
+	// ConditionTopologyAffinityReady indicates that the pods created for topology affinity have been finalized and the init containers holding startup should release.
+	ConditionTopologyAffinityReady = "TopologyAffinityReady"
 )
 
 // Constants for Condition Reasons.

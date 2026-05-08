@@ -27,6 +27,7 @@ import (
 	grovecorev1alpha1 "github.com/ai-dynamo/grove/operator/api/core/v1alpha1"
 	"github.com/ai-dynamo/grove/operator/internal/controller/common/component"
 	componentutils "github.com/ai-dynamo/grove/operator/internal/controller/common/component/utils"
+	commontopology "github.com/ai-dynamo/grove/operator/internal/controller/common/topology"
 	groveerr "github.com/ai-dynamo/grove/operator/internal/errors"
 	"github.com/ai-dynamo/grove/operator/internal/expect"
 	"github.com/ai-dynamo/grove/operator/internal/index"
@@ -106,6 +107,15 @@ func (r _resource) prepareSyncFlow(ctx context.Context, logger logr.Logger, pclq
 		return nil, err
 	}
 
+	sc.topologyAffinity, err = commontopology.ResolvePodCliqueTopologyAffinityStatus(ctx, r.client, r.nodeLabels, sc.pcs, pclq)
+	if err != nil {
+		return nil, groveerr.WrapError(err,
+			errCodeGetTopologyAffinity,
+			component.OperationSync,
+			fmt.Sprintf("failed to resolve topology affinity for PodClique %v", client.ObjectKeyFromObject(pclq)),
+		)
+	}
+
 	return sc, nil
 }
 
@@ -141,7 +151,17 @@ func (r _resource) getPodNamesUpdatedInAssociatedPodGang(existingPodGang *groves
 func (r _resource) runSyncFlow(logger logr.Logger, sc *syncContext) syncFlowResult {
 	result := syncFlowResult{}
 	diff := r.syncExpectationsAndComputeDifference(logger, sc)
-	if diff < 0 {
+	if sc.topologyAffinity != nil {
+		if err := r.syncTopologyAffinityPods(logger, sc); err != nil {
+			result.recordError(err)
+		}
+		if !sc.topologyAffinity.AssociatedReady {
+			result.recordError(groveerr.New(groveerr.ErrCodeRequeueAfter,
+				component.OperationSync,
+				"waiting for topology affinity associated PodCliques to be scheduled",
+			))
+		}
+	} else if diff < 0 {
 		logger.Info("found fewer pods than desired", "pclq.spec.replicas", sc.pclq.Spec.Replicas, "delta", diff)
 		diff *= -1
 		numScheduleGatedPods, err := r.createPods(sc.ctx, logger, sc, diff)
@@ -178,10 +198,11 @@ func (r _resource) syncExpectationsAndComputeDifference(logger logr.Logger, sc *
 	r.expectationsStore.SyncExpectations(sc.pclqExpectationsStoreKey, nonTerminatingPodUIDs, terminatingPodUIDs)
 	createExpectations := r.expectationsStore.GetCreateExpectations(sc.pclqExpectationsStoreKey)
 	deleteExpectations := r.expectationsStore.GetDeleteExpectations(sc.pclqExpectationsStoreKey)
-	diff := len(sc.existingPCLQPods) + len(createExpectations) - int(sc.pclq.Spec.Replicas) - len(deleteExpectations)
+	diff := len(sc.existingPCLQPods) + len(createExpectations) - sc.desiredReplicas() - len(deleteExpectations)
 
 	logger.V(4).Info("synced expectations",
 		"pclq.spec.replicas", sc.pclq.Spec.Replicas,
+		"desiredReplicas", sc.desiredReplicas(),
 		"existingPCLPodNames", lo.Map(sc.existingPCLQPods, func(pod *corev1.Pod, _ int) string { return pod.Name }),
 		"createExpectations", createExpectations,
 		"deleteExpectations", deleteExpectations,
@@ -235,7 +256,7 @@ func (r _resource) deleteExcessPods(sc *syncContext, logger logr.Logger, diff in
 // selectExcessPodsToDelete identifies excess pods for deletion using DeletionSorter for prioritization
 func selectExcessPodsToDelete(sc *syncContext, logger logr.Logger) []*corev1.Pod {
 	var candidatePodsToDelete []*corev1.Pod
-	if diff := len(sc.existingPCLQPods) - int(sc.pclq.Spec.Replicas); diff > 0 {
+	if diff := len(sc.existingPCLQPods) - sc.desiredReplicas(); diff > 0 {
 		logger.Info("found excess pods for PodClique", "numExcessPods", diff)
 		sorter := DeletionSorter{
 			Pods:                      sc.existingPCLQPods,
@@ -483,6 +504,14 @@ type syncContext struct {
 	pclqExpectationsStoreKey        string
 	expectedPodTemplateHash         string
 	expectedPodTemplateHashes       componentutils.HashCandidates
+	topologyAffinity                *grovecorev1alpha1.PodCliqueTopologyAffinityStatus
+}
+
+func (sc *syncContext) desiredReplicas() int {
+	if sc.topologyAffinity != nil {
+		return len(sc.topologyAffinity.TargetDomains) * int(sc.pclq.Spec.Replicas)
+	}
+	return int(sc.pclq.Spec.Replicas)
 }
 
 // syncFlowResult captures the result of a sync flow run.

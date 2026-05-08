@@ -161,6 +161,39 @@ spec:
                             Specification of the desired behavior of a PodClique.
                             More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#spec-and-status
                           properties:
+                            affinity:
+                              description: Affinity is a group of affinity scheduling
+                                rules for a PodClique.
+                              properties:
+                                topologyAffinity:
+                                  description: |-
+                                    Describes PodClique topology affinity rules.
+                                    This clique's pods are placed the same topology domain as the referenced clique.
+                                  properties:
+                                    cliqueNames:
+                                      description: |-
+                                        CliqueNames is the list of names of the PodCliques that are part of the affinity group.
+                                        Pods are scheduled at the union of all scheduled PodClique domains.
+                                      items:
+                                        type: string
+                                      type: array
+                                    domain:
+                                      description: |-
+                                        Domain specifies the topology domain for creating affine replicas.
+                                        Must reference a domain in the topology levels defined in the ClusterTopology CR name as set in TopologyName.
+                                        Example: "rack" means replicas placed within all racks that the dependent cliqueNames are scheduled in.
+                                      type: string
+                                    topologyName:
+                                      description: |-
+                                        TopologyName is the name of the ClusterTopology resource to use for topology-aware scheduling.
+                                        If topologyAffinity is set, topologyName and domain must both be specified.
+                                      type: string
+                                  required:
+                                  - cliqueNames
+                                  - domain
+                                  - topologyName
+                                  type: object
+                              type: object
                             autoScalingConfig:
                               description: ScaleConfig is the horizontal pod autoscaler
                                 configuration for a PodClique.

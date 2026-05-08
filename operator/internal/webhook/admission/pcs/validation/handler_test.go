@@ -388,6 +388,32 @@ func TestValidateUpdate(t *testing.T) {
 	}
 }
 
+func TestValidateUpdateAllowsDeletingPodCliqueSetWithMissingTopology(t *testing.T) {
+	cl := testutils.NewTestClientBuilder().Build()
+	mgr := &testutils.FakeManager{
+		Client: cl,
+		Scheme: cl.Scheme(),
+		Logger: logr.Discard(),
+	}
+	cfg := groveconfigv1alpha1.OperatorConfiguration{
+		TopologyAwareScheduling: getDefaultTASConfig(),
+		Network:                 getDefaultNetworkConfig(),
+		Scheduler:               groveconfigv1alpha1.SchedulerConfiguration{Profiles: []groveconfigv1alpha1.SchedulerProfile{{Name: groveconfigv1alpha1.SchedulerNameKube}}, DefaultProfileName: string(groveconfigv1alpha1.SchedulerNameKube)},
+	}
+	handler := NewHandler(mgr, &cfg, testutils.NewDefaultFakeRegistry())
+
+	oldPCS, _ := topologyAffinityValidationPCS()
+	oldPCS.Finalizers = []string{"grove.io/podcliqueset.grove.io"}
+	newPCS := oldPCS.DeepCopy()
+	now := metav1.Now()
+	newPCS.DeletionTimestamp = &now
+	newPCS.Finalizers = nil
+
+	warnings, err := handler.ValidateUpdate(context.Background(), oldPCS, newPCS)
+	require.NoError(t, err)
+	assert.Empty(t, warnings)
+}
+
 // TestValidateDelete tests validation of PodCliqueSet deletion requests.
 func TestValidateDelete(t *testing.T) {
 	cl := testutils.NewTestClientBuilder().Build()

@@ -19,18 +19,14 @@ package constants
 import "time"
 
 const (
-	// PodGangNameFileName is the name of the file that contains the PodGang name in which the pod is running.
-	PodGangNameFileName = "podgangname"
-	// PodNamespaceFileName is the name of the file that contains the namespace in which the pod is running.
-	PodNamespaceFileName = "namespace"
-	// VolumeMountPathPodInfo contains the file path at which the downward API volume is mounted.
-	VolumeMountPathPodInfo = "/var/grove/pod-info"
 	// OperatorNamespaceFile is the file path at which the namespace file is mounted.
 	OperatorNamespaceFile = "/var/run/secrets/kubernetes.io/serviceaccount/namespace"
 	// ComponentSyncRetryInterval is a retry interval with which a reconcile request will be requeued.
 	ComponentSyncRetryInterval = 5 * time.Second
 	// EnvVarServiceAccountName is the name of the environment variable that stores the serviceAccountName of the operator pod.
 	EnvVarServiceAccountName = "GROVE_OPERATOR_SERVICE_ACCOUNT_NAME"
+	// EnvVarPodNamespace is the name of the environment variable that stores the namespace of the pod.
+	EnvVarPodNamespace = "GROVE_POD_NAMESPACE"
 )
 
 // constants used for pod lifecycle events

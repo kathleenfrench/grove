@@ -25,6 +25,7 @@ import (
 	ctrlcommon "github.com/ai-dynamo/grove/operator/internal/controller/common"
 	"github.com/ai-dynamo/grove/operator/internal/controller/common/component"
 	componentutils "github.com/ai-dynamo/grove/operator/internal/controller/common/component/utils"
+	"github.com/ai-dynamo/grove/operator/internal/controller/nodelabels"
 	pclqcomponent "github.com/ai-dynamo/grove/operator/internal/controller/podclique/components"
 	ctrlutils "github.com/ai-dynamo/grove/operator/internal/controller/utils"
 	"github.com/ai-dynamo/grove/operator/internal/expect"
@@ -45,10 +46,11 @@ type Reconciler struct {
 	reconcileStatusRecorder ctrlcommon.ReconcileErrorRecorder
 	expectationsStore       *expect.ExpectationsStore
 	operatorRegistry        component.OperatorRegistry[grovecorev1alpha1.PodClique]
+	nodeLabels              nodelabels.Cache
 }
 
 // NewReconciler creates a new instance of the PodClique Reconciler.
-func NewReconciler(mgr ctrl.Manager, controllerCfg configv1alpha1.PodCliqueControllerConfiguration, schedRegistry scheduler.Registry) *Reconciler {
+func NewReconciler(mgr ctrl.Manager, controllerCfg configv1alpha1.PodCliqueControllerConfiguration, schedRegistry scheduler.Registry, nodeLabels nodelabels.Cache) *Reconciler {
 	eventRecorder := mgr.GetEventRecorderFor(controllerName)
 	expectationsStore := expect.NewExpectationsStore()
 	return &Reconciler{
@@ -57,7 +59,8 @@ func NewReconciler(mgr ctrl.Manager, controllerCfg configv1alpha1.PodCliqueContr
 		eventRecorder:           eventRecorder,
 		reconcileStatusRecorder: ctrlcommon.NewReconcileErrorRecorder(mgr.GetClient()),
 		expectationsStore:       expectationsStore,
-		operatorRegistry:        pclqcomponent.CreateOperatorRegistry(mgr, eventRecorder, expectationsStore, schedRegistry),
+		operatorRegistry:        pclqcomponent.CreateOperatorRegistry(mgr, eventRecorder, expectationsStore, schedRegistry, nodeLabels),
+		nodeLabels:              nodeLabels,
 	}
 }
 

@@ -19,12 +19,15 @@ package pod
 import (
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 
 	apicommon "github.com/ai-dynamo/grove/operator/api/common"
+	apiconstants "github.com/ai-dynamo/grove/operator/api/common/constants"
 	grovecorev1alpha1 "github.com/ai-dynamo/grove/operator/api/core/v1alpha1"
-	"github.com/ai-dynamo/grove/operator/internal/constants"
+	internalconstants "github.com/ai-dynamo/grove/operator/internal/constants"
 	"github.com/ai-dynamo/grove/operator/internal/controller/common/component"
+	commontopology "github.com/ai-dynamo/grove/operator/internal/controller/common/topology"
 	groveerr "github.com/ai-dynamo/grove/operator/internal/errors"
 	groveversion "github.com/ai-dynamo/grove/operator/internal/version"
 
@@ -41,8 +44,6 @@ const (
 	initContainerName = "grove-initc"
 	// serviceAccountTokenSecretVolumeName is the name of the volume that mounts the service account token secret.
 	serviceAccountTokenSecretVolumeName = "sa-token-secret-vol"
-	// podInfoVolumeName is the name of the downwardAPI volume that passes the pod information to the init container.
-	podInfoVolumeName = "pod-info-vol"
 	// volumeMountPathServiceAccount is the base path where token and CA.cert for the service account will be placed.
 	volumeMountPathServiceAccount = "/var/run/secrets/kubernetes.io/serviceaccount"
 )
@@ -50,7 +51,6 @@ const (
 // configurePodInitContainer adds the necessary volumes and init container to the pod for dependency management
 func configurePodInitContainer(pcs *grovecorev1alpha1.PodCliqueSet, pclq *grovecorev1alpha1.PodClique, pod *corev1.Pod) error {
 	addServiceAccountTokenSecretVolume(pcs.Name, pod)
-	addPodInfoVolume(pod)
 	return addInitContainer(pcs, pclq, pod)
 }
 
@@ -68,32 +68,6 @@ func addServiceAccountTokenSecretVolume(pcsName string, pod *corev1.Pod) {
 	pod.Spec.Volumes = append(pod.Spec.Volumes, saTokenSecretVol)
 }
 
-// addPodInfoVolume adds a downwardAPI volume that exposes pod metadata to the init container
-func addPodInfoVolume(pod *corev1.Pod) {
-	podInfoVol := corev1.Volume{
-		Name: podInfoVolumeName,
-		VolumeSource: corev1.VolumeSource{
-			DownwardAPI: &corev1.DownwardAPIVolumeSource{
-				Items: []corev1.DownwardAPIVolumeFile{
-					{
-						Path: constants.PodNamespaceFileName,
-						FieldRef: &corev1.ObjectFieldSelector{
-							FieldPath: "metadata.namespace",
-						},
-					},
-					{
-						Path: constants.PodGangNameFileName,
-						FieldRef: &corev1.ObjectFieldSelector{
-							FieldPath: fmt.Sprintf("metadata.labels['%s']", apicommon.LabelPodGang),
-						},
-					},
-				},
-			},
-		},
-	}
-	pod.Spec.Volumes = append(pod.Spec.Volumes, podInfoVol)
-}
-
 // addInitContainer adds the Grove init container to the pod with appropriate image, args, and volume mounts
 func addInitContainer(pcs *grovecorev1alpha1.PodCliqueSet, pclq *grovecorev1alpha1.PodClique, pod *corev1.Pod) error {
 	image, err := getInitContainerImage()
@@ -109,12 +83,17 @@ func addInitContainer(pcs *grovecorev1alpha1.PodCliqueSet, pclq *grovecorev1alph
 		Name:  initContainerName,
 		Image: fmt.Sprintf("%s:%s", image, groveversion.New().GitVersion),
 		Args:  args,
-		VolumeMounts: []corev1.VolumeMount{
+		Env: []corev1.EnvVar{
 			{
-				Name:      podInfoVolumeName,
-				ReadOnly:  true,
-				MountPath: constants.VolumeMountPathPodInfo,
+				Name: internalconstants.EnvVarPodNamespace,
+				ValueFrom: &corev1.EnvVarSource{
+					FieldRef: &corev1.ObjectFieldSelector{
+						FieldPath: "metadata.namespace",
+					},
+				},
 			},
+		},
+		VolumeMounts: []corev1.VolumeMount{
 			{
 				Name:      serviceAccountTokenSecretVolumeName,
 				ReadOnly:  true,
@@ -138,21 +117,66 @@ func getInitContainerImage() (string, error) {
 	return initContainerImage, nil
 }
 
+// requiresPodInitContainer reports whether this PodClique's pods need the Grove
+// init container to gate startup.
+func requiresPodInitContainer(pclq *grovecorev1alpha1.PodClique) bool {
+	return len(pclq.Spec.StartsAfter) > 0 || (pclq.Spec.Affinity != nil && pclq.Spec.Affinity.TopologyAffinity != nil)
+}
+
 // generateArgsForInitContainer creates command line arguments for the init container based on PodClique dependencies
 func generateArgsForInitContainer(pcs *grovecorev1alpha1.PodCliqueSet, pclq *grovecorev1alpha1.PodClique) ([]string, error) {
-	args := make([]string, 0)
+	dependencies := make(map[string]struct{})
+	conditions := make(map[string]string)
 	for _, parentCliqueFQN := range pclq.Spec.StartsAfter {
-		parentCliqueTemplateSpec, ok := lo.Find(pcs.Spec.Template.Cliques, func(templateSpec *grovecorev1alpha1.PodCliqueTemplateSpec) bool {
-			return strings.HasSuffix(parentCliqueFQN, templateSpec.Name)
-		})
-		if !ok {
-			return nil, groveerr.New(
-				errCodeMissingPodCliqueTemplate,
-				component.OperationSync,
-				fmt.Sprintf("PodClique %s specified in startsAfter is not present in the templates", parentCliqueFQN),
-			)
+		if err := addPodCliqueDependency(dependencies, pcs, parentCliqueFQN); err != nil {
+			return nil, err
 		}
-		args = append(args, fmt.Sprintf("--podcliques=%s:%d", parentCliqueFQN, *parentCliqueTemplateSpec.Spec.MinAvailable))
 	}
+
+	if pclq.Spec.Affinity != nil && pclq.Spec.Affinity.TopologyAffinity != nil {
+		affinity := pclq.Spec.Affinity.TopologyAffinity
+		associatedPCLQNames, err := commontopology.AssociatedPodCliqueFQNs(pcs, pclq, affinity)
+		if err != nil {
+			return nil, err
+		}
+		conditions[pclq.Name] = apiconstants.ConditionTopologyAffinityReady
+		for _, associatedPCLQName := range associatedPCLQNames {
+			if err := addPodCliqueDependency(dependencies, pcs, associatedPCLQName); err != nil {
+				return nil, err
+			}
+		}
+	}
+
+	args := make([]string, 0, len(dependencies)+len(conditions))
+	seenArgs := make(map[string]struct{}, len(dependencies)+len(conditions))
+	addArg := func(arg string) {
+		if _, ok := seenArgs[arg]; ok {
+			return
+		}
+		seenArgs[arg] = struct{}{}
+		args = append(args, arg)
+	}
+	for name := range dependencies {
+		addArg(fmt.Sprintf("--podcliques=%s", name))
+	}
+	for name, condition := range conditions {
+		addArg(fmt.Sprintf("--podcliques=%s:%s", name, condition))
+	}
+	sort.Strings(args)
 	return args, nil
+}
+
+func addPodCliqueDependency(dependencies map[string]struct{}, pcs *grovecorev1alpha1.PodCliqueSet, parentCliqueFQN string) error {
+	_, ok := lo.Find(pcs.Spec.Template.Cliques, func(templateSpec *grovecorev1alpha1.PodCliqueTemplateSpec) bool {
+		return strings.HasSuffix(parentCliqueFQN, templateSpec.Name)
+	})
+	if !ok {
+		return groveerr.New(
+			errCodeMissingPodCliqueTemplate,
+			component.OperationSync,
+			fmt.Sprintf("PodClique %s specified as an init-container dependency is not present in the templates", parentCliqueFQN),
+		)
+	}
+	dependencies[parentCliqueFQN] = struct{}{}
+	return nil
 }

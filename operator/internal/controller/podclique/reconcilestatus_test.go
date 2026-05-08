@@ -25,6 +25,7 @@ import (
 	grovecorev1alpha1 "github.com/ai-dynamo/grove/operator/api/core/v1alpha1"
 	internalconstants "github.com/ai-dynamo/grove/operator/internal/constants"
 	componentutils "github.com/ai-dynamo/grove/operator/internal/controller/common/component/utils"
+	k8sutils "github.com/ai-dynamo/grove/operator/internal/utils/kubernetes"
 
 	"github.com/go-logr/logr"
 	"github.com/stretchr/testify/assert"
@@ -34,6 +35,58 @@ import (
 	"k8s.io/client-go/tools/record"
 	"k8s.io/utils/ptr"
 )
+
+func TestMutateReplicasPublishesScaleAndTotalCounts(t *testing.T) {
+	tests := []struct {
+		name                  string
+		hasTopologyAffinity   bool
+		wantReplicas          int32
+		wantTotalReplicas     int32
+		wantReadyReplicas     int32
+		wantScheduledReplicas int32
+	}{
+		{
+			name:                  "normal podclique uses total pods as scale replicas",
+			wantReplicas:          4,
+			wantTotalReplicas:     4,
+			wantReadyReplicas:     3,
+			wantScheduledReplicas: 4,
+		},
+		{
+			name:                  "topology-affinity podclique keeps scale replicas per domain",
+			hasTopologyAffinity:   true,
+			wantReplicas:          2,
+			wantTotalReplicas:     4,
+			wantReadyReplicas:     3,
+			wantScheduledReplicas: 4,
+		},
+	}
+
+	podCategories := map[corev1.PodConditionType][]*corev1.Pod{
+		corev1.PodReady:           {{}, {}, {}},
+		corev1.PodScheduled:       {{}, {}, {}, {}},
+		k8sutils.ScheduleGatedPod: {{}},
+		k8sutils.TerminatingPod:   {{}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			pclq := &grovecorev1alpha1.PodClique{
+				Spec: grovecorev1alpha1.PodCliqueSpec{
+					Replicas: 2,
+				},
+			}
+
+			mutateReplicas(pclq, podCategories, 5, tt.hasTopologyAffinity)
+
+			assert.Equal(t, tt.wantReplicas, pclq.Status.Replicas)
+			assert.Equal(t, tt.wantTotalReplicas, pclq.Status.TotalReplicas)
+			assert.Equal(t, tt.wantReadyReplicas, pclq.Status.ReadyReplicas)
+			assert.Equal(t, int32(1), pclq.Status.ScheduleGatedReplicas)
+			assert.Equal(t, tt.wantScheduledReplicas, pclq.Status.ScheduledReplicas)
+		})
+	}
+}
 
 // TestMutateUpdatedReplica tests the mutateUpdatedReplica function across different PodClique states
 func TestMutateUpdatedReplica(t *testing.T) {
@@ -526,4 +579,77 @@ func TestComputeMinAvailableBreachedConditionPartialScheduleRegression(t *testin
 			assert.Equal(t, tt.wantReason, condition.Reason, "MinAvailableBreached reason mismatch")
 		})
 	}
+}
+
+func TestMutateTopologyAffinityStatus(t *testing.T) {
+	pclq := &grovecorev1alpha1.PodClique{}
+	state := &grovecorev1alpha1.PodCliqueTopologyAffinityStatus{
+		LabelKey:          "topology.grove.io/rack",
+		AllDomains:        []string{"rack-a", "rack-b", "rack-c"},
+		AssociatedDomains: []string{"rack-a", "rack-c"},
+		TargetDomains:     []string{"rack-a", "rack-c"},
+		AssociatedReady:   true,
+	}
+
+	mutateTopologyAffinityStatus(pclq, state)
+
+	require.NotNil(t, pclq.Status.TopologyAffinity)
+	assert.Equal(t, "topology.grove.io/rack", pclq.Status.TopologyAffinity.LabelKey)
+	assert.Equal(t, []string{"rack-a", "rack-b", "rack-c"}, pclq.Status.TopologyAffinity.AllDomains)
+	assert.Equal(t, []string{"rack-a", "rack-c"}, pclq.Status.TopologyAffinity.AssociatedDomains)
+	assert.Equal(t, []string{"rack-a", "rack-c"}, pclq.Status.TopologyAffinity.TargetDomains)
+	assert.True(t, pclq.Status.TopologyAffinity.AssociatedReady)
+
+	mutateTopologyAffinityStatus(pclq, nil)
+	assert.Nil(t, pclq.Status.TopologyAffinity)
+}
+
+func TestMutateCurrentHashesSeedsInitialTopologyAffinityHash(t *testing.T) {
+	pcs := &grovecorev1alpha1.PodCliqueSet{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-pcs"},
+		Spec: grovecorev1alpha1.PodCliqueSetSpec{
+			Template: grovecorev1alpha1.PodCliqueSetTemplateSpec{
+				Cliques: []*grovecorev1alpha1.PodCliqueTemplateSpec{
+					{
+						Name: "worker",
+						Spec: grovecorev1alpha1.PodCliqueSpec{
+							PodSpec: corev1.PodSpec{
+								Containers: []corev1.Container{{Name: "main", Image: "example.com/app"}},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	pclq := &grovecorev1alpha1.PodClique{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "test-pcs-0-worker",
+			Labels: map[string]string{
+				apicommon.LabelPartOfKey:                "test-pcs",
+				apicommon.LabelPodCliqueSetReplicaIndex: "0",
+			},
+		},
+		Spec: grovecorev1alpha1.PodCliqueSpec{
+			Replicas: 1,
+		},
+		Status: grovecorev1alpha1.PodCliqueStatus{
+			TopologyAffinity: &grovecorev1alpha1.PodCliqueTopologyAffinityStatus{
+				TargetDomains: []string{"rack-a"},
+			},
+			UpdatedReplicas: 0,
+		},
+	}
+
+	expectedPodTemplateHashes, err := componentutils.GetExpectedPCLQPodTemplateHashCandidates(pcs, pclq.ObjectMeta)
+	require.NoError(t, err)
+
+	pcs.Status.CurrentGenerationHash = ptr.To(expectedPodTemplateHashes.Canonical)
+	pclq.Labels[apicommon.LabelPodTemplateHash] = expectedPodTemplateHashes.Canonical
+
+	require.NoError(t, mutateCurrentHashes(logr.Discard(), pcs, pclq))
+
+	require.NotNil(t, pclq.Status.CurrentPodTemplateHash)
+	assert.Equal(t, ptr.To(expectedPodTemplateHashes.Canonical), pclq.Status.CurrentPodCliqueSetGenerationHash)
 }

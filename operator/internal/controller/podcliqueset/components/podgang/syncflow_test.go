@@ -50,6 +50,54 @@ var defaultFakeSchedulerRegistry = &testutils.FakeSchedulerRegistry{
 	DefaultBackend: "default-scheduler",
 }
 
+func TestDetermineTopologyAffinityReplicasUsesPodCliqueStatus(t *testing.T) {
+	sc := &syncContext{
+		existingPCLQs: []grovecorev1alpha1.PodClique{
+			{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-pclq"},
+				Status: grovecorev1alpha1.PodCliqueStatus{
+					TopologyAffinity: &grovecorev1alpha1.PodCliqueTopologyAffinityStatus{
+						TargetDomains: []string{"rack-a", "rack-b"},
+					},
+				},
+			},
+		},
+	}
+
+	replicas, err := determineTopologyAffinityReplicas(sc, "test-pclq", 3)
+
+	require.NoError(t, err)
+	assert.Equal(t, int32(6), replicas)
+}
+
+func TestDetermineTopologyAffinityReplicasRequeuesUntilStatusAvailable(t *testing.T) {
+	tests := []struct {
+		name          string
+		existingPCLQs []grovecorev1alpha1.PodClique
+	}{
+		{
+			name: "podclique_missing",
+		},
+		{
+			name: "topology_status_missing",
+			existingPCLQs: []grovecorev1alpha1.PodClique{
+				{ObjectMeta: metav1.ObjectMeta{Name: "test-pclq"}},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := determineTopologyAffinityReplicas(&syncContext{existingPCLQs: tt.existingPCLQs}, "test-pclq", 3)
+
+			require.Error(t, err)
+			var groveErr *groveerr.GroveError
+			require.True(t, errors.As(err, &groveErr))
+			assert.Equal(t, groveerr.ErrCodeRequeueAfter, groveErr.Code)
+		})
+	}
+}
+
 // This is a critical test for HPA scaling logic:
 // - Tests how PodGangs split when scaling: base vs scaled PodGangs
 // - Verifies minAvailable logic works correctly during scale up/down
