@@ -51,6 +51,7 @@ var allowedStartupTypes = sets.New(grovecorev1alpha1.CliqueStartupTypeInOrder, g
 // pcsValidator validates PodCliqueSet resources for create and update operations.
 type pcsValidator struct {
 	operation       admissionv1.Operation
+	subResource     string
 	pcs             *grovecorev1alpha1.PodCliqueSet
 	tasEnabled      bool
 	schedulerConfig groveconfigv1alpha1.SchedulerConfiguration
@@ -61,9 +62,14 @@ type pcsValidator struct {
 // newPCSValidator creates a new PodCliqueSet validator for the given operation.
 // schedulerConfig is the full scheduler configuration; the validator uses it for
 // scheduler-name matching and may use per-scheduler config for future validations.
-func newPCSValidator(pcs *grovecorev1alpha1.PodCliqueSet, operation admissionv1.Operation, tasConfig groveconfigv1alpha1.TopologyAwareSchedulingConfiguration, schedulerConfig groveconfigv1alpha1.SchedulerConfiguration, cl client.Client, schedRegistry scheduler.Registry) *pcsValidator {
+func newPCSValidator(pcs *grovecorev1alpha1.PodCliqueSet, operation admissionv1.Operation, tasConfig groveconfigv1alpha1.TopologyAwareSchedulingConfiguration, schedulerConfig groveconfigv1alpha1.SchedulerConfiguration, cl client.Client, schedRegistry scheduler.Registry, subResource ...string) *pcsValidator {
+	var requestSubResource string
+	if len(subResource) > 0 {
+		requestSubResource = subResource[0]
+	}
 	return &pcsValidator{
 		operation:       operation,
+		subResource:     requestSubResource,
 		pcs:             pcs,
 		tasEnabled:      tasConfig.Enabled,
 		schedulerConfig: schedulerConfig,

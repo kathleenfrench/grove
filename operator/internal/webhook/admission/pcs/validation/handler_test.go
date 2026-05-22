@@ -414,6 +414,68 @@ func TestValidateUpdateAllowsDeletingPodCliqueSetWithMissingTopology(t *testing.
 	assert.Empty(t, warnings)
 }
 
+func TestValidateUpdateTopologyAffinityScaleSubresourceAllowsReplicasAboveMinAvailable(t *testing.T) {
+	tests := []struct {
+		name        string
+		subResource string
+		wantErrText string
+	}{
+		{
+			name:        "scale subresource",
+			subResource: scaleSubResource,
+		},
+		{
+			name:        "regular update",
+			wantErrText: "minAvailable must equal replicas",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cl := testutils.NewTestClientBuilder().
+				WithObjects(topologyAffinityClusterTopology()).
+				Build()
+			mgr := &testutils.FakeManager{
+				Client: cl,
+				Scheme: cl.Scheme(),
+				Logger: logr.Discard(),
+			}
+			cfg := groveconfigv1alpha1.OperatorConfiguration{
+				TopologyAwareScheduling: groveconfigv1alpha1.TopologyAwareSchedulingConfiguration{Enabled: true},
+				Network:                 getDefaultNetworkConfig(),
+				Scheduler:               groveconfigv1alpha1.SchedulerConfiguration{Profiles: []groveconfigv1alpha1.SchedulerProfile{{Name: groveconfigv1alpha1.SchedulerNameKube}}, DefaultProfileName: string(groveconfigv1alpha1.SchedulerNameKube)},
+			}
+			handler := NewHandler(mgr, &cfg, testutils.NewDefaultFakeRegistry())
+
+			oldPCS, _ := topologyAffinityValidationPCS()
+			oldPCS.Spec.Template.TerminationDelay = ptr.To(metav1.Duration{Duration: 4 * time.Hour})
+			oldPCS.Spec.Template.StartupType = ptr.To(grovecorev1alpha1.CliqueStartupTypeAnyOrder)
+			for _, clique := range oldPCS.Spec.Template.Cliques {
+				clique.Spec.RoleName = clique.Name + "-role"
+			}
+
+			newPCS := oldPCS.DeepCopy()
+			newPCS.Spec.Template.Cliques[1].Spec.Replicas = 2
+
+			ctx := admission.NewContextWithRequest(context.Background(), admission.Request{
+				AdmissionRequest: admissionv1.AdmissionRequest{
+					Operation:   admissionv1.Update,
+					SubResource: tt.subResource,
+				},
+			})
+			warnings, err := handler.ValidateUpdate(ctx, oldPCS, newPCS)
+
+			if tt.wantErrText == "" {
+				require.NoError(t, err)
+				assert.Empty(t, warnings)
+				return
+			}
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.wantErrText)
+		})
+	}
+}
+
 // TestValidateDelete tests validation of PodCliqueSet deletion requests.
 func TestValidateDelete(t *testing.T) {
 	cl := testutils.NewTestClientBuilder().Build()

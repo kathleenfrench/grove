@@ -42,14 +42,18 @@ func TestValidatePodCliqueTopologyAffinity(t *testing.T) {
 
 	tests := []struct {
 		name        string
+		operation   admissionv1.Operation
+		subResource string
 		mutateGPU   func(*grovecorev1alpha1.PodCliqueTemplateSpec)
 		wantErrText string
 	}{
 		{
-			name: "valid topology affinity",
+			name:      "valid topology affinity",
+			operation: admissionv1.Create,
 		},
 		{
-			name: "minAvailable must equal replicas",
+			name:      "minAvailable must equal replicas",
+			operation: admissionv1.Create,
 			mutateGPU: func(gpu *grovecorev1alpha1.PodCliqueTemplateSpec) {
 				gpu.Spec.Replicas = 2
 				gpu.Spec.MinAvailable = ptr.To[int32](1)
@@ -57,14 +61,35 @@ func TestValidatePodCliqueTopologyAffinity(t *testing.T) {
 			wantErrText: "minAvailable must equal replicas",
 		},
 		{
-			name: "nodeSelector cannot use topology key",
+			name:        "scale subresource update allows replicas above minAvailable",
+			operation:   admissionv1.Update,
+			subResource: scaleSubResource,
+			mutateGPU: func(gpu *grovecorev1alpha1.PodCliqueTemplateSpec) {
+				gpu.Spec.Replicas = 2
+				gpu.Spec.MinAvailable = ptr.To[int32](1)
+			},
+		},
+		{
+			name:        "scale subresource update rejects replicas below minAvailable",
+			operation:   admissionv1.Update,
+			subResource: scaleSubResource,
+			mutateGPU: func(gpu *grovecorev1alpha1.PodCliqueTemplateSpec) {
+				gpu.Spec.Replicas = 1
+				gpu.Spec.MinAvailable = ptr.To[int32](2)
+			},
+			wantErrText: "minAvailable must equal replicas",
+		},
+		{
+			name:      "nodeSelector cannot use topology key",
+			operation: admissionv1.Create,
 			mutateGPU: func(gpu *grovecorev1alpha1.PodCliqueTemplateSpec) {
 				gpu.Spec.PodSpec.NodeSelector = map[string]string{topologyAffinityTestKey: "a"}
 			},
 			wantErrText: "nodeSelector conflicts with topologyAffinity",
 		},
 		{
-			name: "nodeAffinity cannot use topology key",
+			name:      "nodeAffinity cannot use topology key",
+			operation: admissionv1.Create,
 			mutateGPU: func(gpu *grovecorev1alpha1.PodCliqueTemplateSpec) {
 				gpu.Spec.PodSpec.Affinity = &corev1.Affinity{
 					NodeAffinity: &corev1.NodeAffinity{
@@ -94,7 +119,7 @@ func TestValidatePodCliqueTopologyAffinity(t *testing.T) {
 				WithScheme(scheme).
 				WithObjects(topologyAffinityClusterTopology()).
 				Build()
-			validator := newPCSValidator(pcs, admissionv1.Create, configv1alpha1.TopologyAwareSchedulingConfiguration{Enabled: true}, configv1alpha1.SchedulerConfiguration{}, cl, testutils.NewDefaultFakeRegistry())
+			validator := newPCSValidator(pcs, tc.operation, configv1alpha1.TopologyAwareSchedulingConfiguration{Enabled: true}, configv1alpha1.SchedulerConfiguration{}, cl, testutils.NewDefaultFakeRegistry(), tc.subResource)
 
 			errs := validator.validatePodCliqueTopologyAffinity(gpu, field.NewPath("spec", "template", "cliques").Index(1))
 			if tc.wantErrText == "" {

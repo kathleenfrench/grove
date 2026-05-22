@@ -25,11 +25,14 @@ import (
 	"github.com/ai-dynamo/grove/operator/internal/clustertopology"
 
 	"github.com/samber/lo"
+	admissionv1 "k8s.io/api/admission/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 )
+
+const scaleSubResource = "scale"
 
 func (v *pcsValidator) validatePodCliqueTopologyAffinity(clique *grovecorev1alpha1.PodCliqueTemplateSpec, fldPath *field.Path) field.ErrorList {
 	if clique.Spec.Affinity == nil || clique.Spec.Affinity.TopologyAffinity == nil {
@@ -63,7 +66,7 @@ func (v *pcsValidator) validatePodCliqueTopologyAffinity(clique *grovecorev1alph
 		}
 	}
 
-	if clique.Spec.MinAvailable != nil && *clique.Spec.MinAvailable != clique.Spec.Replicas {
+	if clique.Spec.MinAvailable != nil && *clique.Spec.MinAvailable != clique.Spec.Replicas && !v.isScaleUpdateAboveMinAvailable(clique) {
 		allErrs = append(allErrs, field.Invalid(fldPath.Child("spec", "minAvailable"), *clique.Spec.MinAvailable, "minAvailable must equal replicas when topologyAffinity is set"))
 	}
 
@@ -76,6 +79,13 @@ func (v *pcsValidator) validatePodCliqueTopologyAffinity(clique *grovecorev1alph
 	}
 	allErrs = append(allErrs, validateTopologyAffinityNodeSelectorConflict(clique.Spec.PodSpec, labelKey, fldPath.Child("spec", "podSpec"))...)
 	return allErrs
+}
+
+func (v *pcsValidator) isScaleUpdateAboveMinAvailable(clique *grovecorev1alpha1.PodCliqueTemplateSpec) bool {
+	return v.operation == admissionv1.Update &&
+		v.subResource == scaleSubResource &&
+		clique.Spec.MinAvailable != nil &&
+		*clique.Spec.MinAvailable < clique.Spec.Replicas
 }
 
 func (v *pcsValidator) resolveTopologyAffinityLabelKey(ctx context.Context, affinity *grovecorev1alpha1.TopologyAffinity, fldPath *field.Path) (string, field.ErrorList) {
