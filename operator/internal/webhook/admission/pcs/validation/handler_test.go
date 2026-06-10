@@ -199,7 +199,7 @@ func TestValidatePodCliqueSetWithLPXBackend(t *testing.T) {
 			string(groveconfigv1alpha1.SchedulerNameKube): testutils.NewFakeSchedulerBackend(
 				string(groveconfigv1alpha1.SchedulerNameKube),
 			),
-			string(groveconfigv1alpha1.SchedulerNameLPX): lpx.New(profile),
+			string(groveconfigv1alpha1.SchedulerNameLPX): lpx.New(nil, profile),
 		},
 		DefaultBackend: string(groveconfigv1alpha1.SchedulerNameKube),
 	}

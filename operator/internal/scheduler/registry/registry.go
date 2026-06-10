@@ -92,7 +92,7 @@ func newSchedulerBackend(cl client.Client, scheme *runtime.Scheme, rec record.Ev
 		}
 		return b, nil
 	case configv1alpha1.SchedulerNameLPX:
-		b := lpx.New(p)
+		b := lpx.New(cl, p)
 		if err := b.Init(); err != nil {
 			return nil, err
 		}

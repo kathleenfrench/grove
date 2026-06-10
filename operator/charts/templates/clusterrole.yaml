@@ -165,6 +165,15 @@ rules:
   - get
   - list
   - watch
+# LPX candidate-pool selection is read from the scheduler's durable allocation.
+- apiGroups:
+  - scheduling.lpu.nvidia.com
+  resources:
+  - lpupipelineallocations
+  verbs:
+  - get
+  - list
+  - watch
 {{- if .Values.config.network.autoMNNVLEnabled }}
 # MNNVL (Multi-Node NVLink) support requires permissions for ComputeDomain and ResourceClaimTemplate resources.
 # Note: Kubernetes allows RBAC rules for resources that don't exist yet. If the ComputeDomain CRD is not installed,
@@ -212,4 +221,3 @@ rules:
   - update
   - patch
 {{- end }}
-

@@ -24,6 +24,7 @@ import (
 	groveschedulerv1alpha1 "github.com/ai-dynamo/grove/scheduler/api/core/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -55,6 +56,25 @@ type Backend interface {
 
 	// ValidatePodCliqueSet runs scheduler-specific validations on the PodCliqueSet (e.g. TAS required but not supported).
 	ValidatePodCliqueSet(ctx context.Context, pcs *grovecorev1alpha1.PodCliqueSet) error
+}
+
+// CandidatePoolSelection is a scheduler backend's durable exact Pod cohort.
+type CandidatePoolSelection struct {
+	AllocationUID        types.UID
+	AllocationGeneration int64
+	PlanDigest           string
+	PodUIDs              []types.UID
+}
+
+// CandidatePoolBackend is an optional interface for backends that can read a
+// durable exact selection for an initially overprovisioned Pod cohort.
+type CandidatePoolBackend interface {
+	ResolveCandidatePoolSelection(
+		ctx context.Context,
+		podGang *groveschedulerv1alpha1.PodGang,
+		pclq *grovecorev1alpha1.PodClique,
+		pods []*corev1.Pod,
+	) (*CandidatePoolSelection, error)
 }
 
 // TopologyAwareBackend is an optional interface that Backend

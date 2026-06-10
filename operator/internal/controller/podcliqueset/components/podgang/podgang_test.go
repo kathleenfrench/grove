@@ -66,6 +66,7 @@ func TestBuildResourceWithLPXBackend(t *testing.T) {
 	registry := &testutils.FakeSchedulerRegistry{
 		Backends: map[string]scheduler.Backend{
 			string(configv1alpha1.SchedulerNameLPX): lpx.New(
+				nil,
 				configv1alpha1.SchedulerProfile{Name: configv1alpha1.SchedulerNameLPX},
 			),
 		},
