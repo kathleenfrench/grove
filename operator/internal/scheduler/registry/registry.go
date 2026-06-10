@@ -24,6 +24,7 @@ import (
 	"github.com/ai-dynamo/grove/operator/internal/scheduler"
 	"github.com/ai-dynamo/grove/operator/internal/scheduler/kai"
 	"github.com/ai-dynamo/grove/operator/internal/scheduler/kube"
+	"github.com/ai-dynamo/grove/operator/internal/scheduler/lpx"
 
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/tools/record"
@@ -86,6 +87,12 @@ func newSchedulerBackend(cl client.Client, scheme *runtime.Scheme, rec record.Ev
 		return b, nil
 	case configv1alpha1.SchedulerNameKai:
 		b := kai.New(cl, scheme, rec, p)
+		if err := b.Init(); err != nil {
+			return nil, err
+		}
+		return b, nil
+	case configv1alpha1.SchedulerNameLPX:
+		b := lpx.New(p)
 		if err := b.Init(); err != nil {
 			return nil, err
 		}
