@@ -38,7 +38,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
-func TestBuildResourceWithLPXBackend(t *testing.T) {
+func TestBuildResourceWithMixedDefaultAndLPXBackends(t *testing.T) {
 	const (
 		namespace   = "default"
 		pcsName     = "model"
@@ -48,6 +48,17 @@ func TestBuildResourceWithLPXBackend(t *testing.T) {
 	)
 
 	pcs := testutils.NewPodCliqueSetBuilder(pcsName, namespace, "test-uid").
+		WithPodCliqueTemplateSpec(
+			testutils.NewPodCliqueTemplateSpecBuilder("cyborg").
+				WithPodSpec(corev1.PodSpec{
+					SchedulerName: string(configv1alpha1.SchedulerNameKube),
+					Containers: []corev1.Container{{
+						Name:  "cyborg",
+						Image: "cyborg",
+					}},
+				}).
+				Build(),
+		).
 		WithPodCliqueTemplateSpec(
 			testutils.NewPodCliqueTemplateSpecBuilder(cliqueName).
 				WithPodSpec(corev1.PodSpec{
@@ -65,11 +76,14 @@ func TestBuildResourceWithLPXBackend(t *testing.T) {
 	require.NoError(t, groveschedulerv1alpha1.AddToScheme(scheme))
 	registry := &testutils.FakeSchedulerRegistry{
 		Backends: map[string]scheduler.Backend{
+			string(configv1alpha1.SchedulerNameKube): testutils.NewFakeSchedulerBackend(
+				string(configv1alpha1.SchedulerNameKube),
+			),
 			string(configv1alpha1.SchedulerNameLPX): lpx.New(
 				configv1alpha1.SchedulerProfile{Name: configv1alpha1.SchedulerNameLPX},
 			),
 		},
-		DefaultBackend: string(configv1alpha1.SchedulerNameLPX),
+		DefaultBackend: string(configv1alpha1.SchedulerNameKube),
 	}
 	resource := &_resource{
 		scheme:        scheme,

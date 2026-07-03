@@ -19,7 +19,6 @@ package validation
 import (
 	"context"
 	"fmt"
-	"strings"
 	"testing"
 	"time"
 
@@ -169,7 +168,6 @@ func TestValidateSchedulerNames(t *testing.T) {
 		schedulerConfig      groveconfigv1alpha1.SchedulerConfiguration
 		schedulerNames       []string
 		expectErrors         int
-		expectInvalidSame    bool
 		expectInvalidEnabled bool
 	}{
 		{
@@ -230,8 +228,7 @@ func TestValidateSchedulerNames(t *testing.T) {
 				DefaultProfileName: string(groveconfigv1alpha1.SchedulerNameKube),
 			},
 			schedulerNames:       []string{"default-scheduler", "kai-scheduler"},
-			expectErrors:         1,
-			expectInvalidSame:    true,
+			expectErrors:         0,
 			expectInvalidEnabled: false,
 		},
 		{
@@ -266,7 +263,6 @@ func TestValidateSchedulerNames(t *testing.T) {
 			},
 			schedulerNames:       []string{"kai-scheduler"},
 			expectErrors:         1,
-			expectInvalidSame:    false,
 			expectInvalidEnabled: true,
 		},
 		{
@@ -280,7 +276,6 @@ func TestValidateSchedulerNames(t *testing.T) {
 			},
 			schedulerNames:       []string{"volcano"},
 			expectErrors:         1,
-			expectInvalidSame:    false,
 			expectInvalidEnabled: true,
 		},
 		{
@@ -293,8 +288,7 @@ func TestValidateSchedulerNames(t *testing.T) {
 				DefaultProfileName: string(groveconfigv1alpha1.SchedulerNameKube),
 			},
 			schedulerNames:       []string{"", "kai-scheduler"},
-			expectErrors:         1,
-			expectInvalidSame:    true,
+			expectErrors:         0,
 			expectInvalidEnabled: false,
 		},
 	}
@@ -321,11 +315,8 @@ func TestValidateSchedulerNames(t *testing.T) {
 			assert.Len(t, errs, tt.expectErrors, "validation errors: %v", errs)
 			if tt.expectErrors > 0 {
 				msgs := lo.Map(errs, func(e *field.Error, _ int) string { return e.ErrorBody() })
-				if tt.expectInvalidSame {
-					assert.Contains(t, strings.Join(msgs, " "), "have to be the same")
-				}
 				if tt.expectInvalidEnabled {
-					assert.Contains(t, strings.Join(msgs, " "), "not enabled")
+					assert.Contains(t, msgs[0], "not enabled")
 				}
 			}
 			for _, e := range errs {

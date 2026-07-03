@@ -132,22 +132,30 @@ func (h *Handler) ValidateDelete(_ context.Context, _ runtime.Object) (admission
 	return nil, nil
 }
 
-// validatePodCliqueSetWithBackend resolves the scheduler backend for the PCS and runs backend-specific validation.
-// All cliques share the same (resolved) schedulerName after validateSchedulerNames, so we use the first clique.
+// validatePodCliqueSetWithBackend runs backend-specific validation once for every scheduler represented by the PCS.
 func (h *Handler) validatePodCliqueSetWithBackend(ctx context.Context, pcs *v1alpha1.PodCliqueSet) error {
-	schedulerName := ""
-	if len(pcs.Spec.Template.Cliques) > 0 && pcs.Spec.Template.Cliques[0] != nil {
-		schedulerName = pcs.Spec.Template.Cliques[0].Spec.PodSpec.SchedulerName
-	}
-
-	backend := h.schedRegistry.GetOrDefault(schedulerName)
-	if backend == nil {
-		if schedulerName == "" {
-			return fmt.Errorf("default scheduler backend is not configured")
+	validated := make(map[string]struct{})
+	for _, clique := range pcs.Spec.Template.Cliques {
+		if clique == nil {
+			continue
 		}
-		return fmt.Errorf("schedulerName %q is not enabled in OperatorConfiguration", schedulerName)
+		schedulerName := clique.Spec.PodSpec.SchedulerName
+		backend := h.schedRegistry.GetOrDefault(schedulerName)
+		if backend == nil {
+			if schedulerName == "" {
+				return fmt.Errorf("default scheduler backend is not configured")
+			}
+			return fmt.Errorf("schedulerName %q is not enabled in OperatorConfiguration", schedulerName)
+		}
+		if _, found := validated[backend.Name()]; found {
+			continue
+		}
+		if err := backend.ValidatePodCliqueSet(ctx, pcs); err != nil {
+			return fmt.Errorf("scheduler backend %q rejected PodCliqueSet: %w", backend.Name(), err)
+		}
+		validated[backend.Name()] = struct{}{}
 	}
-	return backend.ValidatePodCliqueSet(ctx, pcs)
+	return nil
 }
 
 // castToPodCliqueSet attempts to cast a runtime.Object to a PodCliqueSet.

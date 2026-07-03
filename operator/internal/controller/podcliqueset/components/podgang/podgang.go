@@ -253,15 +253,28 @@ func podGangHasTranslatedTopologyConstraints(pgi *podGangInfo) bool {
 	return false
 }
 
-// getSchedulerNameForPCS returns the scheduler backend name for the PodCliqueSet:
-// First check the PodClique templates to find any schedulerName configured. Validating webhook ensures
-// that there cannot be more than one scheduler name configured for a PCS.
-// the template's schedulerName if set (same across all cliques per validation), else the default backend.
+// getSchedulerNameForPCS returns the scheduler backend responsible for the shared PodGang.
+// LPX owns the workload-wide gang when an LPX clique is present; each clique still keeps its own
+// schedulerName and is prepared by that backend.
 func (r _resource) getSchedulerNameForPCS(pcs *grovecorev1alpha1.PodCliqueSet) string {
+	var firstSchedulerName string
 	for _, c := range pcs.Spec.Template.Cliques {
-		if c != nil && c.Spec.PodSpec.SchedulerName != "" {
-			return c.Spec.PodSpec.SchedulerName
+		if c == nil {
+			continue
 		}
+		backend := r.schedRegistry.GetOrDefault(c.Spec.PodSpec.SchedulerName)
+		if backend == nil {
+			continue
+		}
+		if firstSchedulerName == "" {
+			firstSchedulerName = backend.Name()
+		}
+		if backend.Name() == string(configv1alpha1.SchedulerNameLPX) {
+			return backend.Name()
+		}
+	}
+	if firstSchedulerName != "" {
+		return firstSchedulerName
 	}
 	return r.schedRegistry.GetDefault().Name()
 }

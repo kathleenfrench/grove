@@ -211,7 +211,7 @@ func TestValidateCreate(t *testing.T) {
 	}
 }
 
-func TestValidatePodCliqueSetWithLPXBackend(t *testing.T) {
+func TestValidatePodCliqueSetWithMixedDefaultAndLPXBackends(t *testing.T) {
 	profile := groveconfigv1alpha1.SchedulerProfile{Name: groveconfigv1alpha1.SchedulerNameLPX}
 	registry := &testutils.FakeSchedulerRegistry{
 		Backends: map[string]scheduler.Backend{
@@ -225,14 +225,27 @@ func TestValidatePodCliqueSetWithLPXBackend(t *testing.T) {
 	handler := &Handler{schedRegistry: registry}
 	pcs := testutils.NewPodCliqueSetBuilder("test-pcs", "default", uuid.NewUUID()).
 		WithPodCliqueTemplateSpec(
-			testutils.NewPodCliqueTemplateSpecBuilder("worker").
-				WithRoleName("worker").
+			testutils.NewPodCliqueTemplateSpecBuilder("cyborg").
+				WithRoleName("cyborg").
+				WithReplicas(1).
+				WithPodSpec(corev1.PodSpec{
+					SchedulerName: string(groveconfigv1alpha1.SchedulerNameKube),
+					Containers: []corev1.Container{{
+						Name:  "cyborg",
+						Image: "cyborg",
+					}},
+				}).
+				Build(),
+		).
+		WithPodCliqueTemplateSpec(
+			testutils.NewPodCliqueTemplateSpecBuilder("conductor").
+				WithRoleName("conductor").
 				WithReplicas(1).
 				WithPodSpec(corev1.PodSpec{
 					SchedulerName: string(groveconfigv1alpha1.SchedulerNameLPX),
 					Containers: []corev1.Container{{
-						Name:  "worker",
-						Image: "worker",
+						Name:  "conductor",
+						Image: "conductor",
 					}},
 				}).
 				Build(),
@@ -244,6 +257,7 @@ func TestValidatePodCliqueSetWithLPXBackend(t *testing.T) {
 	pcs.Spec.Template.TopologyConstraint = &grovecorev1alpha1.TopologyConstraint{}
 	err := handler.validatePodCliqueSetWithBackend(context.Background(), pcs)
 	require.Error(t, err)
+	assert.Contains(t, err.Error(), `scheduler backend "lpx-scheduler"`)
 	assert.Contains(t, err.Error(), "does not support Grove topology constraints")
 }
 
