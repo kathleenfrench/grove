@@ -156,7 +156,8 @@ type PodCliqueTopologyAffinityStatus struct {
 	// LabelKey is the node label key for the configured topology domain.
 	// +optional
 	LabelKey string `json:"labelKey,omitempty"`
-	// AllDomains is the set of all currently known values for LabelKey.
+	// AllDomains is the sorted set of eligible values for LabelKey. For candidate
+	// pools it is frozen once CandidatePoolObservedGeneration is recorded.
 	// +listType=set
 	// +optional
 	AllDomains []string `json:"allDomains,omitempty"`
@@ -171,6 +172,27 @@ type PodCliqueTopologyAffinityStatus struct {
 	// AssociatedReady indicates whether all associated PodCliques have reached their scheduled minimum.
 	// +optional
 	AssociatedReady bool `json:"associatedReady,omitempty"`
+	// CandidatePoolObservedGeneration records the PodClique generation for which Grove
+	// completed the initial candidate pool across AllDomains. Once recorded for a
+	// generation, AllDomains is frozen for that candidate pool.
+	// +optional
+	CandidatePoolObservedGeneration *int64 `json:"candidatePoolObservedGeneration,omitempty"`
+	// Selection is the immutable scheduler selection that narrows an initial candidate pool.
+	// +optional
+	Selection *PodCliqueTopologyAffinitySelectionStatus `json:"selection,omitempty"`
+}
+
+// PodCliqueTopologyAffinitySelectionStatus records an immutable scheduler selection.
+type PodCliqueTopologyAffinitySelectionStatus struct {
+	// SourceUID identifies the source object that committed the selection.
+	SourceUID string `json:"sourceUID"`
+	// SourceRevision identifies the source object's committed plan revision.
+	SourceRevision int64 `json:"sourceRevision"`
+	// SourceDigest identifies the committed plan content.
+	SourceDigest string `json:"sourceDigest"`
+	// SelectedDomains is the sorted, immutable subset of candidate-pool topology domains.
+	// +listType=set
+	SelectedDomains []string `json:"selectedDomains"`
 }
 
 // MinAvailable returns the minimum replica count that dependent PodCliques

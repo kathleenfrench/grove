@@ -35,6 +35,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
@@ -63,13 +64,43 @@ func (r *Reconciler) reconcileStatus(ctx context.Context, logger logr.Logger, pc
 
 	podCategories := k8sutils.CategorizePodsByConditionType(logger, existingPods)
 
-	topologyAffinityStatus, err := commontopology.ResolvePodCliqueTopologyAffinityStatus(ctx, r.client, r.nodeLabels, pcs, pclq)
+	topologyAffinityStatus, candidatePoolBackend, err :=
+		commontopology.ResolvePodCliqueTopologyAffinityState(
+			ctx,
+			r.client,
+			r.nodeLabels,
+			r.schedRegistry,
+			pcs,
+			pclq,
+			pclq.Labels[apicommon.LabelPodGang],
+			true,
+		)
 	if err != nil {
 		logger.Error(err, "failed to resolve PodClique topology affinity state")
 		return ctrlcommon.ReconcileWithErrors("failed to resolve PodClique topology affinity state", err)
 	}
 	// mutate PodClique Status Replicas, ReadyReplicas, ScheduleGatedReplicas and UpdatedReplicas.
 	mutateReplicas(pclq, podCategories, len(existingPods), topologyAffinityStatus != nil)
+	if candidatePoolBackend {
+		expectedPodTemplateHashes, hashErr :=
+			componentutils.GetExpectedPCLQPodTemplateHashCandidates(
+				pcs,
+				pclq.ObjectMeta,
+			)
+		if hashErr != nil {
+			logger.Error(hashErr, "failed to compute desired PodClique template hash")
+			return ctrlcommon.ReconcileWithErrors(
+				"failed to compute desired PodClique template hash",
+				hashErr,
+			)
+		}
+		markCandidatePoolComplete(
+			pclq,
+			topologyAffinityStatus,
+			existingPods,
+			expectedPodTemplateHashes,
+		)
+	}
 	mutateTopologyAffinityStatus(pclq, topologyAffinityStatus)
 	mutateUpdatedReplica(pcs, pclq, existingPods)
 	// mutate PodClique.Status.CurrentPodTemplateHash and PodClique.Status.CurrentPodCliqueSetGenerationHash
@@ -86,7 +117,12 @@ func (r *Reconciler) reconcileStatus(ctx context.Context, logger logr.Logger, pc
 			len(podCategories[k8sutils.PodHasAtleastOneContainerWithNonZeroExitCode]),
 			len(podCategories[k8sutils.PodStartedButNotReady]))
 		r.emitAllScheduledReplicasLostIfNeeded(pclq, originalStatus.ScheduledReplicas)
-		mutateTopologyAffinityReadyCondition(pclq, topologyAffinityStatus, existingPods)
+		mutateTopologyAffinityReadyCondition(
+			pclq,
+			topologyAffinityStatus,
+			existingPods,
+			candidatePoolBackend,
+		)
 	}
 
 	// mutate the selector that will be used by an autoscaler.
@@ -372,19 +408,202 @@ func mutateTopologyAffinityStatus(pclq *grovecorev1alpha1.PodClique, state *grov
 	pclq.Status.TopologyAffinity = state.DeepCopy()
 }
 
-func mutateTopologyAffinityReadyCondition(pclq *grovecorev1alpha1.PodClique, state *grovecorev1alpha1.PodCliqueTopologyAffinityStatus, existingPods []*corev1.Pod) {
+func markCandidatePoolComplete(
+	pclq *grovecorev1alpha1.PodClique,
+	state *grovecorev1alpha1.PodCliqueTopologyAffinityStatus,
+	existingPods []*corev1.Pod,
+	expectedPodTemplateHashes componentutils.HashCandidates,
+) {
+	if state == nil || state.Selection != nil {
+		return
+	}
+	if state.CandidatePoolObservedGeneration != nil &&
+		*state.CandidatePoolObservedGeneration == pclq.Generation {
+		return
+	}
+	if initialCandidatePoolComplete(
+		pclq,
+		state,
+		existingPods,
+		expectedPodTemplateHashes,
+	) {
+		state.CandidatePoolObservedGeneration = ptr.To(pclq.Generation)
+	}
+}
+
+func initialCandidatePoolComplete(
+	pclq *grovecorev1alpha1.PodClique,
+	state *grovecorev1alpha1.PodCliqueTopologyAffinityStatus,
+	existingPods []*corev1.Pod,
+	expectedPodTemplateHashes componentutils.HashCandidates,
+) bool {
+	if !candidatePoolDomainsCanonical(state.AllDomains) {
+		return false
+	}
+	targetDomains := sets.New(state.AllDomains...)
+	counts := make(map[string]int, len(state.AllDomains))
+	for _, pod := range existingPods {
+		if k8sutils.IsResourceTerminating(pod.ObjectMeta) {
+			continue
+		}
+		domain := pod.Labels[apicommon.LabelTopologyAffinityValue]
+		if !podControlledByPodClique(pod, pclq) ||
+			!targetDomains.Has(domain) ||
+			!expectedPodTemplateHashes.Matches(pod.Labels[apicommon.LabelPodTemplateHash]) ||
+			!podTemplateClaimsResolved(pod) {
+			return false
+		}
+		counts[domain]++
+	}
+	for _, domain := range state.AllDomains {
+		if counts[domain] != int(pclq.Spec.Replicas) {
+			return false
+		}
+	}
+	return true
+}
+
+func candidatePoolDomainsCanonical(domains []string) bool {
+	if len(domains) == 0 {
+		return false
+	}
+	for i, domain := range domains {
+		if domain == "" || i > 0 && domains[i-1] >= domain {
+			return false
+		}
+	}
+	return true
+}
+
+func podControlledByPodClique(
+	pod *corev1.Pod,
+	pclq *grovecorev1alpha1.PodClique,
+) bool {
+	controller := metav1.GetControllerOf(pod)
+	return controller != nil &&
+		controller.APIVersion == grovecorev1alpha1.SchemeGroupVersion.String() &&
+		controller.Kind == constants.KindPodClique &&
+		controller.Name == pclq.Name &&
+		controller.UID == pclq.UID
+}
+
+func podTemplateClaimsResolved(pod *corev1.Pod) bool {
+	templateClaims := sets.New[string]()
+	for _, claim := range pod.Spec.ResourceClaims {
+		if claim.ResourceClaimTemplateName != nil {
+			templateClaims.Insert(claim.Name)
+		}
+	}
+	if templateClaims.Len() == 0 {
+		return true
+	}
+
+	resolvedClaims := sets.New[string]()
+	for _, status := range pod.Status.ResourceClaimStatuses {
+		if status.ResourceClaimName != nil && *status.ResourceClaimName != "" {
+			resolvedClaims.Insert(status.Name)
+		}
+	}
+	return resolvedClaims.HasAll(sets.List(templateClaims)...)
+}
+
+func podsMatchTargetDomains(
+	pclq *grovecorev1alpha1.PodClique,
+	state *grovecorev1alpha1.PodCliqueTopologyAffinityStatus,
+	existingPods []*corev1.Pod,
+) bool {
+	if len(state.TargetDomains) == 0 {
+		return false
+	}
+	targetDomains := sets.New(state.TargetDomains...)
+	counts := make(map[string]int, len(state.TargetDomains))
+	for _, pod := range existingPods {
+		if k8sutils.IsResourceTerminating(pod.ObjectMeta) {
+			continue
+		}
+		domain := pod.Labels[apicommon.LabelTopologyAffinityValue]
+		if !targetDomains.Has(domain) {
+			return false
+		}
+		counts[domain]++
+	}
+	for _, domain := range state.TargetDomains {
+		if counts[domain] != int(pclq.Spec.Replicas) {
+			return false
+		}
+	}
+	return true
+}
+
+func mutateTopologyAffinityReadyCondition(
+	pclq *grovecorev1alpha1.PodClique,
+	state *grovecorev1alpha1.PodCliqueTopologyAffinityStatus,
+	existingPods []*corev1.Pod,
+	candidatePoolBackend bool,
+) {
 	if state == nil {
 		meta.RemoveStatusCondition(&pclq.Status.Conditions, constants.ConditionTopologyAffinityReady)
 		return
 	}
-	newCondition := computeTopologyAffinityReadyCondition(pclq, state, existingPods)
+	newCondition := computeTopologyAffinityReadyCondition(
+		pclq,
+		state,
+		existingPods,
+		candidatePoolBackend,
+	)
 	if k8sutils.HasConditionChanged(pclq.Status.Conditions, newCondition) {
 		meta.SetStatusCondition(&pclq.Status.Conditions, newCondition)
 	}
 }
 
-func computeTopologyAffinityReadyCondition(pclq *grovecorev1alpha1.PodClique, state *grovecorev1alpha1.PodCliqueTopologyAffinityStatus, existingPods []*corev1.Pod) metav1.Condition {
+func computeTopologyAffinityReadyCondition(
+	pclq *grovecorev1alpha1.PodClique,
+	state *grovecorev1alpha1.PodCliqueTopologyAffinityStatus,
+	existingPods []*corev1.Pod,
+	candidatePoolBackend bool,
+) metav1.Condition {
 	now := metav1.Now()
+	if candidatePoolBackend {
+		if state.CandidatePoolObservedGeneration == nil ||
+			*state.CandidatePoolObservedGeneration != pclq.Generation {
+			return metav1.Condition{
+				Type:               constants.ConditionTopologyAffinityReady,
+				Status:             metav1.ConditionFalse,
+				Reason:             constants.ConditionReasonInsufficientScheduledPods,
+				Message:            "Initial topology-affinity candidate pool is incomplete",
+				ObservedGeneration: pclq.Generation,
+				LastTransitionTime: now,
+			}
+		}
+		if state.Selection == nil {
+			return metav1.Condition{
+				Type:               constants.ConditionTopologyAffinityReady,
+				Status:             metav1.ConditionFalse,
+				Reason:             constants.ConditionReasonInsufficientScheduledPods,
+				Message:            "Scheduler candidate-domain selection is pending",
+				ObservedGeneration: pclq.Generation,
+				LastTransitionTime: now,
+			}
+		}
+		if !podsMatchTargetDomains(pclq, state, existingPods) {
+			return metav1.Condition{
+				Type:               constants.ConditionTopologyAffinityReady,
+				Status:             metav1.ConditionFalse,
+				Reason:             constants.ConditionReasonInsufficientScheduledPods,
+				Message:            "Topology-affinity Pods are converging to selected domains",
+				ObservedGeneration: pclq.Generation,
+				LastTransitionTime: now,
+			}
+		}
+		return metav1.Condition{
+			Type:               constants.ConditionTopologyAffinityReady,
+			Status:             metav1.ConditionTrue,
+			Reason:             constants.ConditionReasonSufficientScheduledPods,
+			Message:            "Topology-affinity Pods match the committed selected domains",
+			ObservedGeneration: pclq.Generation,
+			LastTransitionTime: now,
+		}
+	}
 	if !state.AssociatedReady {
 		return metav1.Condition{
 			Type:               constants.ConditionTopologyAffinityReady,

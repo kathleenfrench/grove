@@ -106,7 +106,7 @@ func newSchedulerBackend(cl, directClient client.Client, scheme *runtime.Scheme,
 	case configv1alpha1.SchedulerNameVolcano:
 		b = volcano.New(cl, scheme, rec, p)
 	case configv1alpha1.SchedulerNameLPX:
-		b = lpx.New(p)
+		b = lpx.New(cl, p)
 	default:
 		return nil, fmt.Errorf("scheduler profile %q is not supported", p.Name)
 	}

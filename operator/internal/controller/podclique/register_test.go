@@ -17,6 +17,7 @@
 package podclique
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/ai-dynamo/grove/operator/api/common"
@@ -25,10 +26,13 @@ import (
 	testutils "github.com/ai-dynamo/grove/operator/test/utils"
 
 	"github.com/go-logr/logr"
+	lpxv1alpha1 "github.com/nvidia-lpu/lpx-scheduler/api/go/v1alpha1"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/event"
@@ -39,6 +43,56 @@ import (
 func TestControllerConstants(t *testing.T) {
 	// Verifies that controller name is set correctly
 	assert.Equal(t, "podclique-controller", controllerName)
+}
+
+type kindForRESTMapper struct {
+	apimeta.RESTMapper
+	requested schema.GroupVersionResource
+	kind      schema.GroupVersionKind
+	err       error
+}
+
+func (m *kindForRESTMapper) KindFor(resource schema.GroupVersionResource) (schema.GroupVersionKind, error) {
+	m.requested = resource
+	return m.kind, m.err
+}
+
+func TestLPXRequestWatchAvailability(t *testing.T) {
+	expectedGVR := lpxv1alpha1.GroupVersion.WithResource("lpupipelinerequests")
+	expectedGVK := lpxv1alpha1.GroupVersion.WithKind("LpuPipelineRequest")
+
+	t.Run("exact resource enables watch", func(t *testing.T) {
+		mapper := &kindForRESTMapper{kind: expectedGVK}
+
+		available, err := lpxRequestWatchAvailable(mapper)
+
+		require.NoError(t, err)
+		assert.True(t, available)
+		assert.Equal(t, expectedGVR, mapper.requested)
+	})
+
+	t.Run("resource no-match skips optional watch", func(t *testing.T) {
+		mapper := &kindForRESTMapper{err: &apimeta.NoResourceMatchError{
+			PartialResource: expectedGVR,
+		}}
+
+		available, err := lpxRequestWatchAvailable(mapper)
+
+		require.NoError(t, err)
+		assert.False(t, available)
+		assert.Equal(t, expectedGVR, mapper.requested)
+	})
+
+	t.Run("transient mapper failure fails closed", func(t *testing.T) {
+		mapperErr := errors.New("discovery unavailable")
+		mapper := &kindForRESTMapper{err: mapperErr}
+
+		available, err := lpxRequestWatchAvailable(mapper)
+
+		assert.False(t, available)
+		require.ErrorIs(t, err, mapperErr)
+		assert.Equal(t, expectedGVR, mapper.requested)
+	})
 }
 
 // TestPodPredicate_Delete tests the pod predicate's Delete path for the scenario:
@@ -75,6 +129,59 @@ func TestPodPredicate_Delete(t *testing.T) {
 			"ObserveDeletions should remove the deleted pod UID from uidsToAdd so next reconcile can recreate the pod")
 		assert.True(t, result, "predicate should allow the event so the handler enqueues reconcile")
 	})
+}
+
+func TestPodPredicateResourceClaimStatusTriggersCandidatePoolCompletion(t *testing.T) {
+	pod := testutils.NewPodBuilder("candidate-0", "default").
+		WithOwner("candidate").
+		WithLabels(map[string]string{common.LabelManagedByKey: common.LabelManagedByValue}).
+		Build()
+	updated := pod.DeepCopy()
+	updated.Status.ResourceClaimStatuses = []corev1.PodResourceClaimStatus{{
+		Name:              "accelerators",
+		ResourceClaimName: ptr.To("candidate-0-accelerators"),
+	}}
+
+	pred := (&Reconciler{}).podPredicate()
+	assert.True(t, pred.Update(event.UpdateEvent{ObjectOld: pod, ObjectNew: updated}))
+}
+
+func TestPodCliqueCandidatePoolStatusTriggersDurableContinuation(t *testing.T) {
+	pred, ok := podCliqueSpecOrCandidatePoolPredicate().(predicate.Funcs)
+	require.True(t, ok)
+	oldPCLQ := &grovecorev1alpha1.PodClique{
+		ObjectMeta: metav1.ObjectMeta{Generation: 3},
+	}
+
+	poolComplete := oldPCLQ.DeepCopy()
+	poolComplete.Status.TopologyAffinity =
+		&grovecorev1alpha1.PodCliqueTopologyAffinityStatus{
+			CandidatePoolObservedGeneration: ptr.To(int64(3)),
+		}
+	assert.True(t, pred.UpdateFunc(event.UpdateEvent{
+		ObjectOld: oldPCLQ,
+		ObjectNew: poolComplete,
+	}))
+
+	selectionLatched := poolComplete.DeepCopy()
+	selectionLatched.Status.TopologyAffinity.Selection =
+		&grovecorev1alpha1.PodCliqueTopologyAffinitySelectionStatus{
+			SourceUID:       "request-uid",
+			SourceRevision:  7,
+			SourceDigest:    "plan-digest",
+			SelectedDomains: []string{"fabric-a"},
+		}
+	assert.True(t, pred.UpdateFunc(event.UpdateEvent{
+		ObjectOld: poolComplete,
+		ObjectNew: selectionLatched,
+	}))
+
+	conditionOnly := selectionLatched.DeepCopy()
+	conditionOnly.Status.Conditions = []metav1.Condition{{Type: "Ready"}}
+	assert.False(t, pred.UpdateFunc(event.UpdateEvent{
+		ObjectOld: selectionLatched,
+		ObjectNew: conditionOnly,
+	}))
 }
 
 // TestPodCliqueSetPredicateCurrentlyUpdatingReplicaChanges verifies that the PodCliqueSet

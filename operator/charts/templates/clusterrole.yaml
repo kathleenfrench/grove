@@ -145,6 +145,16 @@ rules:
   - update
   - delete
 {{- end }}
+{{- if include "grove.scheduler.hasProfile" (list . "lpx-scheduler") }}
+- apiGroups:
+  - scheduling.lpu.nvidia.com
+  resources:
+  - lpupipelinerequests
+  verbs:
+  - get
+  - list
+  - watch
+{{- end }}
 # DRA (Dynamic Resource Allocation) integration for resource sharing
 - apiGroups:
   - resource.k8s.io

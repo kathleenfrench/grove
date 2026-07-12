@@ -24,6 +24,7 @@ import (
 	groveschedulerv1alpha1 "github.com/ai-dynamo/grove/scheduler/api/core/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -52,6 +53,37 @@ type Backend interface {
 
 	// ValidatePodCliqueSet runs scheduler-specific validations on the PodCliqueSet (e.g. TAS required but not supported).
 	ValidatePodCliqueSet(ctx context.Context, pcs *grovecorev1alpha1.PodCliqueSet) error
+}
+
+// CandidatePoolObservation is a scheduler backend's observation of the source
+// that may commit an immutable topology-domain selection.
+type CandidatePoolObservation struct {
+	SourceUID       types.UID
+	SourceRevision  int64
+	SourceDigest    string
+	SelectedDomains []string
+	// SourcePlanObserved reports that revision, digest, and domains are available
+	// for integrity comparison, even when the source is not currently eligible.
+	SourcePlanObserved bool
+	// Eligible permits creation of the first selection latch. Persisted latches
+	// compare any observed source identity regardless of current eligibility.
+	Eligible bool
+}
+
+// CandidatePoolBackend is implemented by scheduler backends that commit a
+// topology-domain selection for an initially expanded candidate pool.
+type CandidatePoolBackend interface {
+	ValidateCandidatePoolTopology(
+		ctx context.Context,
+		pclq *grovecorev1alpha1.PodClique,
+		resolvedLabelKey string,
+	) error
+
+	ResolveCandidatePoolSelection(
+		ctx context.Context,
+		podGang *groveschedulerv1alpha1.PodGang,
+		pclq *grovecorev1alpha1.PodClique,
+	) (*CandidatePoolObservation, error)
 }
 
 // TopologyAwareBackend is an optional interface that Backend

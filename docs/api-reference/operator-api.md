@@ -599,7 +599,9 @@ _Appears in:_
 | --- | --- | --- | --- |
 | `observedGeneration` _integer_ | ObservedGeneration is the most recent generation observed by the controller. |  |  |
 | `lastErrors` _[LastError](#lasterror) array_ | LastErrors captures the last errors observed by the controller when reconciling the PodClique. |  |  |
-| `replicas` _integer_ | Replicas is the total number of non-terminated Pods targeted by this PodClique. |  |  |
+| `replicas` _integer_ | Replicas is the replica count exposed through the scale subresource.<br />For topology-affinity PodCliques, this matches Spec.Replicas so autoscalers scale per-domain replicas.<br />Use TotalReplicas for the total non-terminated Pod count across all topology domains. |  |  |
+| `totalReplicas` _integer_ | TotalReplicas is the total number of non-terminated Pods targeted by this PodClique.<br />For topology-affinity PodCliques, this is the expanded count across all topology domains. |  |  |
+| `topologyAffinity` _[PodCliqueTopologyAffinityStatus](#podcliquetopologyaffinitystatus)_ | TopologyAffinity captures the resolved topology-affinity state used by controllers that need to size or gate<br />topology-affinity PodCliques without directly reading Node labels. |  |  |
 | `readyReplicas` _integer_ | ReadyReplicas is the number of ready Pods targeted by this PodClique. | 0 |  |
 | `updatedReplicas` _integer_ | UpdatedReplicas is the number of Pods that have been updated and are at the desired revision of the PodClique. | 0 |  |
 | `scheduleGatedReplicas` _integer_ | ScheduleGatedReplicas is the number of Pods that have been created with one or more scheduling gate(s) set.<br />Sum of ReadyReplicas and ScheduleGatedReplicas will always be <= Replicas. | 0 |  |
@@ -609,6 +611,47 @@ _Appears in:_
 | `currentPodCliqueSetGenerationHash` _string_ | CurrentPodCliqueSetGenerationHash establishes a correlation to PodCliqueSet generation hash indicating<br />that the spec of the PodCliqueSet at this generation is fully realized in the PodClique. |  |  |
 | `currentPodTemplateHash` _string_ | CurrentPodTemplateHash establishes a correlation to PodClique template hash indicating<br />that the spec of the PodClique at this template hash is fully realized in the PodClique. |  |  |
 | `updateProgress` _[PodCliqueUpdateProgress](#podcliqueupdateprogress)_ | UpdateProgress provides details about the ongoing update of the PodClique. |  |  |
+
+
+#### PodCliqueTopologyAffinitySelectionStatus
+
+
+
+PodCliqueTopologyAffinitySelectionStatus records an immutable scheduler selection.
+
+
+
+_Appears in:_
+- [PodCliqueTopologyAffinityStatus](#podcliquetopologyaffinitystatus)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `sourceUID` _string_ | SourceUID identifies the source object that committed the selection. |  |  |
+| `sourceRevision` _integer_ | SourceRevision identifies the source object's committed plan revision. |  |  |
+| `sourceDigest` _string_ | SourceDigest identifies the committed plan content. |  |  |
+| `selectedDomains` _string array_ | SelectedDomains is the sorted, immutable subset of candidate-pool topology domains. |  |  |
+
+
+#### PodCliqueTopologyAffinityStatus
+
+
+
+PodCliqueTopologyAffinityStatus captures the resolved topology-affinity state for a PodClique.
+
+
+
+_Appears in:_
+- [PodCliqueStatus](#podcliquestatus)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `labelKey` _string_ | LabelKey is the node label key for the configured topology domain. |  |  |
+| `allDomains` _string array_ | AllDomains is the sorted set of eligible values for LabelKey. For candidate<br />pools it is frozen once CandidatePoolObservedGeneration is recorded. |  |  |
+| `associatedDomains` _string array_ | AssociatedDomains is the set of topology domains used by associated PodCliques. |  |  |
+| `targetDomains` _string array_ | TargetDomains is the set of topology domains this PodClique should currently occupy. |  |  |
+| `associatedReady` _boolean_ | AssociatedReady indicates whether all associated PodCliques have reached their scheduled minimum. |  |  |
+| `candidatePoolObservedGeneration` _integer_ | CandidatePoolObservedGeneration records the PodClique generation for which Grove<br />completed the initial candidate pool across AllDomains. Once recorded for a<br />generation, AllDomains is frozen for that candidate pool. |  |  |
+| `selection` _[PodCliqueTopologyAffinitySelectionStatus](#podcliquetopologyaffinityselectionstatus)_ | Selection is the immutable scheduler selection that narrows an initial candidate pool. |  |  |
 
 
 #### PodCliqueTemplateSpec
@@ -1274,5 +1317,4 @@ _Appears in:_
 | `serverCertDir` _string_ | ServerCertDir is the directory containing the server certificate and key. |  |  |
 | `secretName` _string_ | SecretName is the name of the Kubernetes Secret containing webhook certificates.<br />The Secret must contain tls.crt, tls.key, and ca.crt. | grove-webhook-server-cert |  |
 | `certProvisionMode` _[CertProvisionMode](#certprovisionmode)_ | CertProvisionMode controls how webhook certificates are provisioned. | auto | Enum: [auto manual] <br /> |
-
 
