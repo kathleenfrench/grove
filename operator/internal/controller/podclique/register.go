@@ -18,9 +18,11 @@ package podclique
 
 import (
 	"context"
+	"fmt"
 	"strings"
 
 	"github.com/ai-dynamo/grove/operator/api/common/constants"
+	configv1alpha1 "github.com/ai-dynamo/grove/operator/api/config/v1alpha1"
 	grovecorev1alpha1 "github.com/ai-dynamo/grove/operator/api/core/v1alpha1"
 	componentutils "github.com/ai-dynamo/grove/operator/internal/controller/common/component/utils"
 	grovectrlutils "github.com/ai-dynamo/grove/operator/internal/controller/utils"
@@ -29,8 +31,10 @@ import (
 	k8sutils "github.com/ai-dynamo/grove/operator/internal/utils/kubernetes"
 
 	groveschedulerv1alpha1 "github.com/ai-dynamo/grove/scheduler/api/core/v1alpha1"
+	lpxv1alpha1 "github.com/nvidia-lpu/lpx-scheduler/api/go/v1alpha1"
 	"github.com/samber/lo"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -51,7 +55,7 @@ const (
 
 // RegisterWithManager registers the PodClique controller with the given controller manager.
 func (r *Reconciler) RegisterWithManager(mgr ctrl.Manager) error {
-	return builder.ControllerManagedBy(mgr).
+	controllerBuilder := builder.ControllerManagedBy(mgr).
 		Named(controllerName).
 		WithOptions(controller.Options{
 			MaxConcurrentReconciles: *r.config.ConcurrentSyncs,
@@ -59,8 +63,8 @@ func (r *Reconciler) RegisterWithManager(mgr ctrl.Manager) error {
 		For(&grovecorev1alpha1.PodClique{},
 			builder.WithPredicates(
 				predicate.And(
-					predicate.GenerationChangedPredicate{},
 					managedPodCliquePredicate(),
+					podCliqueSpecOrCandidatePoolPredicate(),
 				),
 			),
 		).
@@ -79,8 +83,78 @@ func (r *Reconciler) RegisterWithManager(mgr ctrl.Manager) error {
 			&groveschedulerv1alpha1.PodGang{},
 			handler.EnqueueRequestsFromMapFunc(mapPodGangToPCLQs()),
 			builder.WithPredicates(podGangPredicate()),
-		).
-		Complete(r)
+		)
+	if r.schedRegistry.Get(string(configv1alpha1.SchedulerNameLPX)) != nil {
+		gvr := lpxv1alpha1.GroupVersion.WithResource("lpupipelinerequests")
+		available, err := lpxRequestWatchAvailable(mgr.GetRESTMapper())
+		if err != nil {
+			return fmt.Errorf("discover LPX request resource %s: %w", gvr, err)
+		}
+		if !available {
+			ctrllogger.Log.Info(
+				"Skipping LPX request watch because its CRD is not installed",
+				"gvr",
+				gvr,
+			)
+		} else {
+			controllerBuilder = controllerBuilder.Watches(
+				&lpxv1alpha1.LPUPipelineRequest{},
+				handler.EnqueueRequestsFromMapFunc(mapLPXRequestToPCLQ()),
+				builder.WithPredicates(lpxRequestPredicate()),
+			)
+		}
+	}
+	return controllerBuilder.Complete(r)
+}
+
+func lpxRequestWatchAvailable(mapper meta.RESTMapper) (bool, error) {
+	gvr := lpxv1alpha1.GroupVersion.WithResource("lpupipelinerequests")
+	if _, err := mapper.KindFor(gvr); err != nil {
+		if meta.IsNoMatchError(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
+}
+
+func podCliqueSpecOrCandidatePoolPredicate() predicate.Predicate {
+	return predicate.Funcs{
+		CreateFunc: func(_ event.CreateEvent) bool { return true },
+		DeleteFunc: func(_ event.DeleteEvent) bool { return true },
+		UpdateFunc: func(e event.UpdateEvent) bool {
+			oldPCLQ, oldOK := e.ObjectOld.(*grovecorev1alpha1.PodClique)
+			newPCLQ, newOK := e.ObjectNew.(*grovecorev1alpha1.PodClique)
+			if !oldOK || !newOK {
+				return false
+			}
+			if oldPCLQ.Generation != newPCLQ.Generation {
+				return true
+			}
+			return candidatePoolStatusChanged(
+				oldPCLQ.Status.TopologyAffinity,
+				newPCLQ.Status.TopologyAffinity,
+			)
+		},
+		GenericFunc: func(_ event.GenericEvent) bool { return false },
+	}
+}
+
+func candidatePoolStatusChanged(
+	oldStatus *grovecorev1alpha1.PodCliqueTopologyAffinityStatus,
+	newStatus *grovecorev1alpha1.PodCliqueTopologyAffinityStatus,
+) bool {
+	if oldStatus == nil {
+		return newStatus != nil &&
+			(newStatus.CandidatePoolObservedGeneration != nil || newStatus.Selection != nil)
+	}
+	if newStatus == nil {
+		return oldStatus.CandidatePoolObservedGeneration != nil || oldStatus.Selection != nil
+	}
+	return !equality.Semantic.DeepEqual(
+		oldStatus.CandidatePoolObservedGeneration,
+		newStatus.CandidatePoolObservedGeneration,
+	) || !equality.Semantic.DeepEqual(oldStatus.Selection, newStatus.Selection)
 }
 
 // managedPodCliquePredicate filters PodClique events to only process managed PodCliques owned by expected resources
@@ -151,7 +225,11 @@ func hasPodStatusChanged(updateEvent event.UpdateEvent) bool {
 	return hasReadyConditionChanged(oldPod.Status.Conditions, newPod.Status.Conditions) ||
 		hasLastTerminationStateChanged(oldPod.Status.InitContainerStatuses, newPod.Status.InitContainerStatuses) ||
 		hasLastTerminationStateChanged(oldPod.Status.ContainerStatuses, newPod.Status.ContainerStatuses) ||
-		hasStartedAndReadyChangedForAnyContainer(oldPod.Status.ContainerStatuses, newPod.Status.ContainerStatuses)
+		hasStartedAndReadyChangedForAnyContainer(oldPod.Status.ContainerStatuses, newPod.Status.ContainerStatuses) ||
+		!equality.Semantic.DeepEqual(
+			oldPod.Status.ResourceClaimStatuses,
+			newPod.Status.ResourceClaimStatuses,
+		)
 }
 
 // hasReadyConditionChanged checks if the Pod's Ready condition status has transitioned
@@ -361,6 +439,29 @@ func podGangPredicate() predicate.Predicate {
 
 			return false
 		},
+		GenericFunc: func(_ event.GenericEvent) bool { return false },
+	}
+}
+
+func mapLPXRequestToPCLQ() handler.MapFunc {
+	return func(_ context.Context, obj client.Object) []reconcile.Request {
+		request, ok := obj.(*lpxv1alpha1.LPUPipelineRequest)
+		if !ok || request.Spec.CyborgPodCliqueRef == nil ||
+			request.Spec.CyborgPodCliqueRef.Name == "" {
+			return nil
+		}
+		return []reconcile.Request{{NamespacedName: types.NamespacedName{
+			Namespace: request.Namespace,
+			Name:      request.Spec.CyborgPodCliqueRef.Name,
+		}}}
+	}
+}
+
+func lpxRequestPredicate() predicate.Predicate {
+	return predicate.Funcs{
+		CreateFunc:  func(_ event.CreateEvent) bool { return true },
+		DeleteFunc:  func(_ event.DeleteEvent) bool { return true },
+		UpdateFunc:  func(_ event.UpdateEvent) bool { return true },
 		GenericFunc: func(_ event.GenericEvent) bool { return false },
 	}
 }

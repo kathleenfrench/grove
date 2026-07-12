@@ -47,6 +47,7 @@ type Reconciler struct {
 	expectationsStore       *expect.ExpectationsStore
 	operatorRegistry        component.OperatorRegistry[grovecorev1alpha1.PodClique]
 	nodeLabels              nodelabels.Cache
+	schedRegistry           scheduler.Registry
 }
 
 // NewReconciler creates a new instance of the PodClique Reconciler.
@@ -61,6 +62,7 @@ func NewReconciler(mgr ctrl.Manager, controllerCfg configv1alpha1.PodCliqueContr
 		expectationsStore:       expectationsStore,
 		operatorRegistry:        pclqcomponent.CreateOperatorRegistry(mgr, eventRecorder, expectationsStore, schedRegistry, nodeLabels),
 		nodeLabels:              nodeLabels,
+		schedRegistry:           schedRegistry,
 	}
 }
 

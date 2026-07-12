@@ -9164,8 +9164,9 @@ spec:
                   topology-affinity PodCliques without directly reading Node labels.
                 properties:
                   allDomains:
-                    description: AllDomains is the set of all currently known values
-                      for LabelKey.
+                    description: |-
+                      AllDomains is the sorted set of eligible values for LabelKey. For candidate
+                      pools it is frozen once CandidatePoolObservedGeneration is recorded.
                     items:
                       type: string
                     type: array
@@ -9181,10 +9182,46 @@ spec:
                     description: AssociatedReady indicates whether all associated
                       PodCliques have reached their scheduled minimum.
                     type: boolean
+                  candidatePoolObservedGeneration:
+                    description: |-
+                      CandidatePoolObservedGeneration records the PodClique generation for which Grove
+                      completed the initial candidate pool across AllDomains. Once recorded for a
+                      generation, AllDomains is frozen for that candidate pool.
+                    format: int64
+                    type: integer
                   labelKey:
                     description: LabelKey is the node label key for the configured
                       topology domain.
                     type: string
+                  selection:
+                    description: Selection is the immutable scheduler selection that
+                      narrows an initial candidate pool.
+                    properties:
+                      selectedDomains:
+                        description: SelectedDomains is the sorted, immutable subset
+                          of candidate-pool topology domains.
+                        items:
+                          type: string
+                        type: array
+                        x-kubernetes-list-type: set
+                      sourceDigest:
+                        description: SourceDigest identifies the committed plan content.
+                        type: string
+                      sourceRevision:
+                        description: SourceRevision identifies the source object's
+                          committed plan revision.
+                        format: int64
+                        type: integer
+                      sourceUID:
+                        description: SourceUID identifies the source object that committed
+                          the selection.
+                        type: string
+                    required:
+                    - selectedDomains
+                    - sourceDigest
+                    - sourceRevision
+                    - sourceUID
+                    type: object
                   targetDomains:
                     description: TargetDomains is the set of topology domains this
                       PodClique should currently occupy.

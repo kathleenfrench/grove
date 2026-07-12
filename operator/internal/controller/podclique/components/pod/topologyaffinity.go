@@ -28,6 +28,7 @@ import (
 	groveerr "github.com/ai-dynamo/grove/operator/internal/errors"
 	"github.com/ai-dynamo/grove/operator/internal/index"
 	"github.com/ai-dynamo/grove/operator/internal/utils"
+	k8sutils "github.com/ai-dynamo/grove/operator/internal/utils/kubernetes"
 
 	"github.com/go-logr/logr"
 	"github.com/samber/lo"
@@ -57,6 +58,9 @@ func selectTopologyAffinityPodsToDelete(sc *syncContext, logger logr.Logger) []*
 	selected := make(map[string]*corev1.Pod)
 
 	for _, pod := range sc.existingPCLQPods {
+		if k8sutils.IsResourceTerminating(pod.ObjectMeta) {
+			continue
+		}
 		value := pod.Labels[apicommon.LabelTopologyAffinityValue]
 		if !targetDomains.Has(value) {
 			selected[pod.Name] = pod
@@ -95,6 +99,9 @@ func selectTopologyAffinityPodsToDelete(sc *syncContext, logger logr.Logger) []*
 }
 
 func (r _resource) deleteSelectedPods(sc *syncContext, logger logr.Logger, podsToDelete []*corev1.Pod) error {
+	if len(podsToDelete) == 0 {
+		return nil
+	}
 	deleteTasks := make([]utils.Task, 0, len(podsToDelete))
 	for _, podToDelete := range podsToDelete {
 		deleteTasks = append(deleteTasks, r.createPodDeletionTask(logger, sc.pclq, podToDelete, sc.pclqExpectationsStoreKey))
@@ -114,7 +121,11 @@ func (r _resource) deleteSelectedPods(sc *syncContext, logger logr.Logger, podsT
 
 func (r _resource) createTopologyAffinityPods(ctx context.Context, logger logr.Logger, sc *syncContext) error {
 	if len(sc.topologyAffinity.TargetDomains) == 0 {
-		return nil
+		return groveerr.New(
+			groveerr.ErrCodeRequeueAfter,
+			component.OperationSync,
+			"waiting for topology-affinity Node label values",
+		)
 	}
 	topologyAffinity := sc.pclq.Spec.Affinity.TopologyAffinity
 	createExpectations := r.expectationsStore.GetCreateExpectations(sc.pclqExpectationsStoreKey)
@@ -123,13 +134,20 @@ func (r _resource) createTopologyAffinityPods(ctx context.Context, logger logr.L
 			"pclq", client.ObjectKeyFromObject(sc.pclq),
 			"numCreateExpectations", len(createExpectations),
 		)
-		return nil
+		return groveerr.New(
+			groveerr.ErrCodeRequeueAfter,
+			component.OperationSync,
+			"waiting for topology-affinity Pod create expectations",
+		)
 	}
 
 	deficits := topologyDomainDeficits(sc)
 	numPods := lo.Reduce(lo.Values(deficits), func(agg int, deficit int, _ int) int {
 		return agg + deficit
 	}, 0)
+	if numPods == 0 {
+		return nil
+	}
 
 	availableIndices, err := index.GetAvailableIndices(logger, sc.existingPCLQPods, numPods)
 	if err != nil {
@@ -168,7 +186,11 @@ func (r _resource) createTopologyAffinityPods(ctx context.Context, logger logr.L
 		return err
 	}
 	logger.Info("created topology-affinity pods", "numberOfCreatedPods", len(runResult.SuccessfulTasks))
-	return nil
+	return groveerr.New(
+		groveerr.ErrCodeRequeueAfter,
+		component.OperationSync,
+		"waiting for created topology-affinity Pods to be observed",
+	)
 }
 
 func topologyDomainDeficits(sc *syncContext) map[string]int {
@@ -176,6 +198,9 @@ func topologyDomainDeficits(sc *syncContext) map[string]int {
 	counts := make(map[string]int, len(sc.topologyAffinity.TargetDomains))
 	targetDomains := sets.New(sc.topologyAffinity.TargetDomains...)
 	for _, pod := range sc.existingPCLQPods {
+		if k8sutils.IsResourceTerminating(pod.ObjectMeta) {
+			continue
+		}
 		value := pod.Labels[apicommon.LabelTopologyAffinityValue]
 		if targetDomains.Has(value) {
 			counts[value]++

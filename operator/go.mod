@@ -10,6 +10,7 @@ require (
 	github.com/go-logr/logr v1.4.3
 	github.com/go-logr/zapr v1.3.0
 	github.com/kai-scheduler/KAI-scheduler v0.15.2
+	github.com/nvidia-lpu/lpx-scheduler/api/go v0.0.0-20260711164244-2c84d1f2cf80
 	github.com/open-policy-agent/cert-controller v0.14.0
 	github.com/samber/lo v1.52.0
 	github.com/spf13/pflag v1.0.10

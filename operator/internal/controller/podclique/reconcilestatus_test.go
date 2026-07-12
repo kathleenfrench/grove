@@ -604,6 +604,83 @@ func TestMutateTopologyAffinityStatus(t *testing.T) {
 	assert.Nil(t, pclq.Status.TopologyAffinity)
 }
 
+func TestMarkCandidatePoolCompleteRequiresEveryDomainAndGeneratedClaim(t *testing.T) {
+	pclq := &grovecorev1alpha1.PodClique{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       "candidate",
+			UID:        "candidate-uid",
+			Generation: 3,
+		},
+		Spec: grovecorev1alpha1.PodCliqueSpec{Replicas: 1},
+	}
+	state := &grovecorev1alpha1.PodCliqueTopologyAffinityStatus{
+		AllDomains:    []string{"fabric-a", "fabric-b"},
+		TargetDomains: []string{"fabric-a", "fabric-b"},
+	}
+	hashes := componentutils.HashCandidates{Canonical: "template-hash"}
+	pods := []*corev1.Pod{
+		candidatePoolStatusPod(pclq, "candidate-a", "fabric-a", true),
+		candidatePoolStatusPod(pclq, "candidate-b", "fabric-b", false),
+	}
+
+	markCandidatePoolComplete(pclq, state, pods, hashes)
+	assert.Nil(t, state.CandidatePoolObservedGeneration)
+
+	pods[1].Status.ResourceClaimStatuses = []corev1.PodResourceClaimStatus{{
+		Name:              "gpu",
+		ResourceClaimName: ptr.To("candidate-b-gpu"),
+	}}
+	pods[1].OwnerReferences[0].UID = "foreign-candidate-uid"
+	markCandidatePoolComplete(pclq, state, pods, hashes)
+	assert.Nil(t, state.CandidatePoolObservedGeneration)
+
+	pods[1].OwnerReferences[0].UID = pclq.UID
+	markCandidatePoolComplete(pclq, state, pods, hashes)
+	require.NotNil(t, state.CandidatePoolObservedGeneration)
+	assert.Equal(t, pclq.Generation, *state.CandidatePoolObservedGeneration)
+
+	markCandidatePoolComplete(pclq, state, nil, hashes)
+	assert.Equal(t, pclq.Generation, *state.CandidatePoolObservedGeneration)
+}
+
+func candidatePoolStatusPod(
+	pclq *grovecorev1alpha1.PodClique,
+	name string,
+	domain string,
+	claimResolved bool,
+) *corev1.Pod {
+	controller := true
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: name,
+			Labels: map[string]string{
+				apicommon.LabelTopologyAffinityValue: domain,
+				apicommon.LabelPodTemplateHash:       "template-hash",
+			},
+			OwnerReferences: []metav1.OwnerReference{{
+				APIVersion: grovecorev1alpha1.SchemeGroupVersion.String(),
+				Kind:       constants.KindPodClique,
+				Name:       pclq.Name,
+				UID:        pclq.UID,
+				Controller: &controller,
+			}},
+		},
+		Spec: corev1.PodSpec{
+			ResourceClaims: []corev1.PodResourceClaim{{
+				Name:                      "gpu",
+				ResourceClaimTemplateName: ptr.To("gpu-template"),
+			}},
+		},
+	}
+	if claimResolved {
+		pod.Status.ResourceClaimStatuses = []corev1.PodResourceClaimStatus{{
+			Name:              "gpu",
+			ResourceClaimName: ptr.To(name + "-gpu"),
+		}}
+	}
+	return pod
+}
+
 func TestMutateCurrentHashesSeedsInitialTopologyAffinityHash(t *testing.T) {
 	pcs := &grovecorev1alpha1.PodCliqueSet{
 		ObjectMeta: metav1.ObjectMeta{Name: "test-pcs"},

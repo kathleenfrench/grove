@@ -80,6 +80,7 @@ func TestBuildResourceWithMixedDefaultAndLPXBackends(t *testing.T) {
 				string(configv1alpha1.SchedulerNameKube),
 			),
 			string(configv1alpha1.SchedulerNameLPX): lpx.New(
+				nil,
 				configv1alpha1.SchedulerProfile{Name: configv1alpha1.SchedulerNameLPX},
 			),
 		},

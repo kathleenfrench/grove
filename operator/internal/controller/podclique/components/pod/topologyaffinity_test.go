@@ -18,12 +18,16 @@ package pod
 
 import (
 	"context"
+	"errors"
 	"testing"
+	"time"
 
 	apicommon "github.com/ai-dynamo/grove/operator/api/common"
 	apiconstants "github.com/ai-dynamo/grove/operator/api/common/constants"
 	grovecorev1alpha1 "github.com/ai-dynamo/grove/operator/api/core/v1alpha1"
+	groveerr "github.com/ai-dynamo/grove/operator/internal/errors"
 	"github.com/ai-dynamo/grove/operator/internal/expect"
+	testutils "github.com/ai-dynamo/grove/operator/test/utils"
 
 	"github.com/go-logr/logr"
 	"github.com/stretchr/testify/assert"
@@ -31,7 +35,9 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/record"
 	"k8s.io/utils/ptr"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 func TestAddTopologyNodeAffinity(t *testing.T) {
@@ -106,7 +112,130 @@ func TestCreateTopologyAffinityPodsWaitsForCreateExpectations(t *testing.T) {
 		},
 	}
 
-	require.NoError(t, r.createTopologyAffinityPods(context.Background(), logr.Discard(), sc))
+	assertTopologyAffinityRequeue(
+		t,
+		r.createTopologyAffinityPods(context.Background(), logr.Discard(), sc),
+	)
+}
+
+func TestCreateTopologyAffinityPodsRequeuesAfterCreatingGenericCandidates(t *testing.T) {
+	t.Setenv(envVarInitContainerImage, "grove-init")
+	pcs, pclq := topologyAffinityInitContainerFixture()
+	pclq.UID = "candidate-uid"
+	pclq.Spec.Replicas = 1
+	cl := testutils.CreateDefaultFakeClient(nil)
+	expectationsStore := expect.NewExpectationsStore()
+	r := _resource{
+		client:            cl,
+		scheme:            cl.Scheme(),
+		eventRecorder:     record.NewFakeRecorder(4),
+		expectationsStore: expectationsStore,
+		schedRegistry:     testutils.NewDefaultFakeRegistry(),
+	}
+	sc := &syncContext{
+		ctx:                      context.Background(),
+		pcs:                      pcs,
+		pclq:                     pclq,
+		associatedPodGangName:    "test-pcs-0",
+		pclqExpectationsStoreKey: "default/test-pcs-0-cyborg",
+		topologyAffinity: &grovecorev1alpha1.PodCliqueTopologyAffinityStatus{
+			LabelKey:      "topology.grove.io/fabric-pod",
+			TargetDomains: []string{"fabric-a"},
+		},
+	}
+
+	assertTopologyAffinityRequeue(
+		t,
+		r.createTopologyAffinityPods(context.Background(), logr.Discard(), sc),
+	)
+	pods := &corev1.PodList{}
+	require.NoError(t, cl.List(context.Background(), pods, client.InNamespace("default")))
+	require.Len(t, pods.Items, 1)
+	assert.Equal(t, "fabric-a", pods.Items[0].Labels[apicommon.LabelTopologyAffinityValue])
+}
+
+func assertTopologyAffinityRequeue(t *testing.T, err error) {
+	t.Helper()
+	require.Error(t, err)
+	var typed *groveerr.GroveError
+	require.True(t, errors.As(err, &typed))
+	assert.Equal(t, groveerr.ErrCodeRequeueAfter, typed.Code)
+}
+
+func TestCandidatePoolDoesNotPruneBeforeSelectionLatch(t *testing.T) {
+	_, pclq := topologyAffinityInitContainerFixture()
+	pclq.Spec.Replicas = 1
+	sc := &syncContext{
+		pclq: pclq,
+		topologyAffinity: &grovecorev1alpha1.PodCliqueTopologyAffinityStatus{
+			AllDomains:    []string{"fabric-a", "fabric-b"},
+			TargetDomains: []string{"fabric-a", "fabric-b"},
+		},
+		existingPCLQPods: []*corev1.Pod{
+			topologyCandidatePod("candidate-a", "fabric-a"),
+			topologyCandidatePod("candidate-b", "fabric-b"),
+		},
+	}
+
+	assert.Empty(t, selectTopologyAffinityPodsToDelete(sc, logr.Discard()))
+}
+
+func TestCandidatePoolPrunesByPersistedDomain(t *testing.T) {
+	_, pclq := topologyAffinityInitContainerFixture()
+	pclq.Spec.Replicas = 1
+	retained := topologyCandidatePod("candidate-a", "fabric-a")
+	surplus := topologyCandidatePod("candidate-b", "fabric-b")
+	sc := &syncContext{
+		pclq: pclq,
+		topologyAffinity: &grovecorev1alpha1.PodCliqueTopologyAffinityStatus{
+			AllDomains:    []string{"fabric-a", "fabric-b"},
+			TargetDomains: []string{"fabric-a"},
+			Selection: &grovecorev1alpha1.PodCliqueTopologyAffinitySelectionStatus{
+				SourceUID:       "request-uid",
+				SourceRevision:  7,
+				SourceDigest:    "plan-digest",
+				SelectedDomains: []string{"fabric-a"},
+			},
+		},
+		existingPCLQPods: []*corev1.Pod{retained, surplus},
+	}
+
+	selected := selectTopologyAffinityPodsToDelete(sc, logr.Discard())
+	require.Len(t, selected, 1)
+	assert.Equal(t, surplus.Name, selected[0].Name)
+}
+
+func TestCandidatePoolRecreatesConfiguredReplicasInSelectedDomain(t *testing.T) {
+	_, pclq := topologyAffinityInitContainerFixture()
+	pclq.Spec.Replicas = 1
+	terminating := topologyCandidatePod("candidate-a", "fabric-a")
+	now := metav1.NewTime(time.Now())
+	terminating.DeletionTimestamp = &now
+	sc := &syncContext{
+		pclq: pclq,
+		topologyAffinity: &grovecorev1alpha1.PodCliqueTopologyAffinityStatus{
+			AllDomains:    []string{"fabric-a", "fabric-b"},
+			TargetDomains: []string{"fabric-a"},
+			Selection: &grovecorev1alpha1.PodCliqueTopologyAffinitySelectionStatus{
+				SourceUID:       "request-uid",
+				SourceRevision:  7,
+				SourceDigest:    "plan-digest",
+				SelectedDomains: []string{"fabric-a"},
+			},
+		},
+		existingPCLQPods: []*corev1.Pod{terminating},
+	}
+
+	assert.Equal(t, map[string]int{"fabric-a": 1}, topologyDomainDeficits(sc))
+}
+
+func topologyCandidatePod(name string, domain string) *corev1.Pod {
+	return &corev1.Pod{ObjectMeta: metav1.ObjectMeta{
+		Name: name,
+		Labels: map[string]string{
+			apicommon.LabelTopologyAffinityValue: domain,
+		},
+	}}
 }
 
 func topologyAffinityInitContainerFixture() (*grovecorev1alpha1.PodCliqueSet, *grovecorev1alpha1.PodClique) {

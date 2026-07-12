@@ -107,7 +107,16 @@ func (r _resource) prepareSyncFlow(ctx context.Context, logger logr.Logger, pclq
 		return nil, err
 	}
 
-	sc.topologyAffinity, err = commontopology.ResolvePodCliqueTopologyAffinityStatus(ctx, r.client, r.nodeLabels, sc.pcs, pclq)
+	sc.topologyAffinity, _, err = commontopology.ResolvePodCliqueTopologyAffinityState(
+		ctx,
+		r.client,
+		r.nodeLabels,
+		r.schedRegistry,
+		sc.pcs,
+		pclq,
+		sc.associatedPodGangName,
+		false,
+	)
 	if err != nil {
 		return nil, groveerr.WrapError(err,
 			errCodeGetTopologyAffinity,
